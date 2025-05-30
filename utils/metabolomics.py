@@ -25,8 +25,6 @@ def plot_fold_change(fc_df, selected_drugs, selected_metabolites):
 
     long_df['Drug_Conc'] = long_df['Drug'].astype(str) + ' (' + long_df['Concentration'].astype(str) + ')'
 
-    st.write(long_df)
-
     fig = px.bar(
         long_df,
         x='Metabolite',
@@ -237,7 +235,6 @@ def metabolomika_app():
             
             # Расчет и отображение Fold Change по запросу
             if calculate_fc and df is not None:
-                st.subheader("Результаты расчета Fold Change")
                 
                 # Определяем режим расчета
                 mode = 'ratio' if fc_mode == 'ratio (B/A)' else 'difference'
@@ -248,13 +245,17 @@ def metabolomika_app():
                 # ✅ Сохраняем в сессию
                 st.session_state['fc_df'] = fc_df
                 
-                # Отображаем результаты
-                st.dataframe(fc_df)
                 
+            if 'fc_df' in st.session_state:
+                
+                st.subheader("Результаты расчета Fold Change")
+                # Отображаем результаты
+                st.dataframe(st.session_state['fc_df'])
+
                 # Добавляем возможность скачать результаты
                 output_fc = io.BytesIO()
                 with pd.ExcelWriter(output_fc, engine='openpyxl') as writer:
-                    fc_df.to_excel(writer, index=False, sheet_name='Fold_Change')
+                    st.session_state['fc_df'].to_excel(writer, index=False, sheet_name='Fold_Change')
                 output_fc.seek(0)
                 
                 st.download_button(
@@ -276,7 +277,7 @@ def metabolomika_app():
                 with st.form("plot_form"):
                     selected_drugs = st.multiselect("Выберите препарат(ы)", available_drugs, default=available_drugs, key="drug_select")
                     selected_metabolites = st.multiselect("Выберите метаболиты", available_metabolites, default=available_metabolites, key="met_select")
-                    submitted = st.form_submit_button("Показать график")
+                    submitted = st.form_submit_button("Перерисовать график")
 
                     if submitted:
                         st.session_state['show_plot'] = True
