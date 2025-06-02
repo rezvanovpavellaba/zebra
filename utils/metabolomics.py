@@ -1,16 +1,178 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from datetime import datetime
 import io
 import seaborn as sns
 import matplotlib.pyplot as plt
 import plotly.express as px
+from scipy.stats import ttest_ind
+
+# Инициализация session state для fc_mode, если его еще нет
+if 'fc_mode' not in st.session_state:
+    st.session_state["fc_mode"] = 'ratio (B/A)'  # Значение по умолчанию
+
+
+def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold=1.0):
+    """
+    Строит Volcano Plot с реальными p-values.
+    Данные берутся из fc_df (должны быть колонки '*_pvalue').
+    """
+    if not selected_drugs:
+        st.warning("Выберите препараты для Volcano Plot.")
+        return
+    
+    # Фильтруем данные: только тестовая группа и максимальная концентрация
+    volcano_data = []
+    for drug in selected_drugs:
+        drug_data = fc_df[(fc_df['Drug'] == drug) & (fc_df['Group'] == 'test')]
+        if not drug_data.empty:
+            max_conc = drug_data['Concentration'].max()
+            max_conc_data = drug_data[drug_data['Concentration'] == max_conc].copy()
+            volcano_data.append(max_conc_data)
+    
+    if not volcano_data:
+        st.error("Нет данных для Volcano Plot.")
+        return
+    
+    volcano_df = pd.concat(volcano_data)
+    
+    # Собираем метаболиты и их p-values
+    metabolite_cols = [col for col in volcano_df.columns 
+                      if col not in ['Drug', 'Experiment date', 'Group', 'Concentration'] 
+                      and not col.endswith('(pvalue)')]
+    
+    # Преобразуем в "длинный" формат
+    long_data = []
+    for _, row in volcano_df.iterrows():
+        for metabolite in metabolite_cols:
+            log2fc = row[metabolite]
+            p_value = row[f'{metabolite} (pvalue)']
+            
+            long_data.append({
+                'Drug': row['Drug'],
+                'Concentration': row['Concentration'],
+                'Metabolite': metabolite,
+                'log2FC': log2fc,
+                'p_value': p_value,
+                '-log10(p_value)': -np.log10(p_value) if p_value > 0 else 10  # избегаем деления на 0
+            })
+    
+    long_df = pd.DataFrame(long_data)
+    
+    # Строим график
+    fig = px.scatter(
+        long_df,
+        x='log2FC',
+        y='-log10(p_value)',
+        color='Drug',
+        hover_data=['Metabolite', 'Concentration', 'p_value'],
+        title=f"Volcano Plot (макс. концентрация, p < {p_value_threshold}, |log2FC| > {log2fc_threshold})",
+        labels={
+            'log2FC': 'log₂(Fold Change)',
+            '-log10(p_value)': '-log₁₀(p-value)'
+        },
+        height=600
+    )
+    
+    # Добавляем пороговые линии
+    fig.add_shape(
+        type='line',
+        x0=-log2fc_threshold,
+        x1=log2fc_threshold,
+        y0=-np.log10(p_value_threshold),
+        y1=-np.log10(p_value_threshold),
+        line=dict(color='red', dash='dash'),
+    )
+    
+    fig.add_shape(
+        type='line',
+        x0=-log2fc_threshold,
+        x1=-log2fc_threshold,
+        y0=0,
+        y1=long_df['-log10(p_value)'].max() + 1,
+        line=dict(color='gray', dash='dot'),
+    )
+    
+    fig.add_shape(
+        type='line',
+        x0=log2fc_threshold,
+        x1=log2fc_threshold,
+        y0=0,
+        y1=long_df['-log10(p_value)'].max() + 1,
+        line=dict(color='gray', dash='dot'),
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def calculate_descriptive_stats_new(df, group_cols, value_cols):
+    """
+    Функция расчета описательной статистики в требуемом формате:
+    - Drug, Group, Concentration - заполняются только при смене группы
+    - Parameter - содержит названия статистик (count, mean, std и т.д.)
+    - Остальные колонки - метаболиты
+    """
+    # Определяем агрегационные функции
+    def q1(x):
+        return np.percentile(x, 25)
+    
+    def q3(x):
+        return np.percentile(x, 75)
+    
+    # Основные статистики
+    stats = df.groupby(group_cols)[value_cols].agg(
+        ['count', 'mean', 'std', 'min', 'median', 'max', q1, q3]
+    )
+    
+    # Переименовываем колонки (убираем MultiIndex)
+    stats.columns = ['_'.join(col).strip() for col in stats.columns.values]
+    
+    # Сбрасываем индекс и преобразуем в нужный формат
+    stats = stats.reset_index()
+    
+    # Создаем длинный формат таблицы
+    stats = stats.melt(
+        id_vars=group_cols,
+        var_name='temp',
+        value_name='value'
+    )
+    
+    # Разделяем метаболит и параметр
+    stats[['Metabolite', 'Parameter']] = stats['temp'].str.split('_', n=1, expand=True)
+    stats.drop(columns=['temp'], inplace=True)
+    
+    # Преобразуем обратно в широкий формат
+    stats = stats.pivot_table(
+        index=group_cols + ['Parameter'],
+        columns='Metabolite',
+        values='value'
+    ).reset_index()
+    
+    # Очищаем повторяющиеся значения в группирующих колонках
+    #for col in group_cols:
+        #stats[col] = stats[col].where(stats[col] != stats[col].shift(), '')
+    
+    # Возвращаем к нормальному порядку колонок
+    stats.columns.name = None
+    column_order = group_cols + ['Parameter'] + value_cols
+    stats = stats[column_order]
+    
+    return stats
 
 
 def plot_fold_change(fc_df, selected_drugs, selected_metabolites):
     if not selected_drugs or not selected_metabolites:
         st.info("Выберите хотя бы один препарат и метаболит для отображения графика.")
         return
+    
+    # Определяем базовое значение линии в зависимости от режима
+    if st.session_state.fc_mode == 'ratio (B/A)':
+        baseline = 1.0
+    elif st.session_state.fc_mode in ['difference ((B-A)/A)', 'log₂(B/A)']:
+        baseline = 0.0
+    else:
+        baseline = 1.0  # fallback
     
     data = fc_df[
         (fc_df['Drug'].isin(selected_drugs)) & (fc_df['Group'] == 'test')
@@ -31,34 +193,30 @@ def plot_fold_change(fc_df, selected_drugs, selected_metabolites):
         y='FoldChange',
         color='Drug_Conc',
         barmode='group',
-        title="Fold Change по метаболитам",
+        title=f"Fold Change по метаболитам ({st.session_state.fc_mode})",
         labels={
-            "FoldChange": "Fold Change (Test / Control)",
+            "FoldChange": f"Fold Change ({st.session_state.fc_mode})",
             "Metabolite": "Метаболиты"
         },
         height=600
     )
 
-    # Добавим горизонтальную линию (y=1.0)
+    # Добавляем горизонтальную линию с учетом режима
     fig.add_shape(
         type="line",
         x0=-0.5,
         x1=len(selected_metabolites)-0.5,
-        y0=1.0,
-        y1=1.0,
+        y0=baseline,
+        y1=baseline,
         line=dict(color="red", dash="dash"),
     )
 
     st.plotly_chart(fig, use_container_width=True)
 
-def calculate_fold_change(df, mode='ratio'):
+def calculate_fold_change_with_pvalues(df, mode='ratio'):
     """
-    Рассчитывает Fold Change для метаболитов между тестовыми и контрольными группами.
-    Добавляет строку для контроля (Control vs Control), где FC = 1 (ratio) или 0 (difference),
-    со средней концентрацией и диапазоном дат.
-    :param df: DataFrame с исходными данными
-    :param mode: 'ratio' для B/A или 'difference' для (B-A)/A
-    :return: DataFrame с рассчитанными Fold Change
+    Расчёт Fold Change и p-values с использованием t-теста Стьюдента.
+    Предполагает равенство дисперсий в группах.
     """
     metabolite_cols = [col for col in df.columns 
                       if col not in ['Drug', 'Experiment date', 'Group', 'Concentration']]
@@ -68,54 +226,70 @@ def calculate_fold_change(df, mode='ratio'):
     for drug in df['Drug'].unique():
         drug_data = df[df['Drug'] == drug]
         control_data = drug_data[drug_data['Group'] == 'control_neg']
-        control_means = control_data[metabolite_cols].mean()
-
-        # Средняя концентрация контролей
-        avg_concentration = control_data['Concentration'].mean()
-
-        # Диапазон дат эксперимента
-        date_min = control_data['Experiment date'].min()
-        date_max = control_data['Experiment date'].max()
-        if pd.notnull(date_min) and pd.notnull(date_max):
-            date_range_str = f"{date_min} — {date_max}"
-        else:
-            date_range_str = None
-
+        test_data = drug_data[drug_data['Group'] == 'test']
+        
+        if len(control_data) < 2 or len(test_data) < 2:
+            st.warning(f"Недостаточно данных для {drug}. Нужно хотя бы 2 повтора в control и test.")
+            continue
+        
         # Добавляем строку "контроль против контроля"
         control_row = {
             'Drug': drug,
-            'Experiment date': date_range_str,
+            'Experiment date': f"{control_data['Experiment date'].min()} — {control_data['Experiment date'].max()}",
             'Group': 'control_vs_control',
-            'Concentration': avg_concentration
+            'Concentration': control_data['Concentration'].mean()
         }
         for metabolite in metabolite_cols:
-            control_row[metabolite] = 1.0 if mode == 'ratio' else 0.0
+            if mode == 'ratio':
+                control_row[metabolite] = 1.0
+            elif mode == 'difference':
+                control_row[metabolite] = 0.0
+            elif mode == 'log2_ratio':
+                control_row[metabolite] = 0.0
+            control_row[f'{metabolite} (pvalue)'] = 1.0  # p-value для контроля = 1
         results.append(control_row)
         
-        # Обрабатываем тестовые строки
-        test_data = drug_data[drug_data['Group'] == 'test']
-        
-        for _, row in test_data.iterrows():
+        # Обрабатываем тестовые группы
+        for conc in test_data['Concentration'].unique():
+            test_subset = test_data[test_data['Concentration'] == conc]
+            
             result_row = {
                 'Drug': drug,
-                'Experiment date': row['Experiment date'],
+                'Experiment date': test_subset['Experiment date'].iloc[0],
                 'Group': 'test',
-                'Concentration': row['Concentration']
+                'Concentration': conc
             }
+            
             for metabolite in metabolite_cols:
-                control_val = control_means[metabolite]
-                test_val = row[metabolite]
+                control_vals = control_data[metabolite].values
+                test_vals = test_subset[metabolite].values
                 
-                if mode == 'ratio' and control_val != 0:
-                    fc = test_val / control_val
-                elif mode == 'difference' and control_val != 0:
-                    fc = (test_val - control_val) / control_val
-                else:
+                # Рассчитываем Fold Change
+                control_mean = np.mean(control_vals)
+                if control_mean == 0:
                     fc = None
+                else:
+                    ratio = np.mean(test_vals) / control_mean
+                    if mode == 'ratio':
+                        fc = ratio
+                    elif mode == 'difference':
+                        fc = (np.mean(test_vals) - control_mean) / control_mean
+                    elif mode == 'log2_ratio':
+                        fc = np.log2(ratio) if ratio > 0 else None
+                
+                # Классический t-тест Стьюдента (равные дисперсии)
+                try:
+                    _, p_value = ttest_ind(control_vals, test_vals, equal_var=True)
+                except:
+                    p_value = 1.0  # в случае ошибки
+                
                 result_row[metabolite] = fc
+                result_row[f'{metabolite} (pvalue)'] = p_value
+            
             results.append(result_row)
     
     return pd.DataFrame(results)
+
 
 def load_and_preprocess_data(uploaded_file):
     """Загружает и предобрабатывает данные из Excel файла."""
@@ -129,16 +303,12 @@ def load_and_preprocess_data(uploaded_file):
                 st.error(f"Отсутствует обязательная колонка: {col}")
                 return None
         
-        # Приведение названий колонок к нижнему регистру для удобства
-        #df.columns = df.columns.str.strip().str.lower()
-        
         # Предобработка даты
         if 'Experiment date' in df.columns:
             df['Experiment date'] = pd.to_datetime(df['Experiment date'], errors='coerce').dt.date
         
         # Приведение группы к нижнему регистру и проверка допустимых значений
         if 'Group' in df.columns:
-            #df['Group'] = df['Group'].astype(str).str.lower().str.strip()
             valid_groups = ['control_neg', 'test']
             if not df['Group'].isin(valid_groups).all():
                 st.warning("Обнаружены нестандартные значения в колонке Group")
@@ -153,45 +323,33 @@ def load_and_preprocess_data(uploaded_file):
         st.error(f"Ошибка при загрузке файла: {str(e)}")
         return None
 
+
 def display_metabolite_data(df):
     """Отображает данные метаболитов в интерактивной таблице."""
     if df is None:
         return
     
     st.subheader("Данные метаболитов")
-    
-    # Определяем колонки с метаболитами (все, кроме обязательных)
-    metabolite_cols = [col for col in df.columns 
-                      if col.lower() not in ['Drug', 'Experiment date', 'Group', 'Concentration']]
-    
-    if not metabolite_cols:
-        st.warning("Не обнаружены колонки с метаболитами")
-        return
-    
-    # Показываем весь датафрейм
     st.dataframe(df)
+
 
 def metabolomika_app():
     """Основная функция приложения для анализа данных метаболомики."""
+    st.title("Анализ данных метаболомики")
     st.write("Загрузите Excel-файл с данными метаболитов для анализа")
     
-    # Загрузка файла
     uploaded_file = st.file_uploader("Выберите Excel файл", type=["xlsx", "xls"])
     
     if uploaded_file is not None:
-        # Загрузка и предобработка данных
         df = load_and_preprocess_data(uploaded_file)
         
         if df is not None:
-            # Отображение основной информации о данных
             with st.sidebar:
                 st.subheader("Общая информация о загруженных данных")
                 
-                # Уникальные препараты
                 with st.expander(f"Уникальные препараты ({len(df['Drug'].unique())})"):
                     st.write(", ".join(sorted(df['Drug'].unique())))
                 
-                # Диапазоны дат и концентраций по препаратам
                 with st.expander("Детали по препаратам"):
                     for drug in sorted(df['Drug'].unique()):
                         drug_data = df[df['Drug'] == drug]
@@ -210,9 +368,8 @@ def metabolomika_app():
                         • Диапазон концентраций (Test): {conc_range}
                         """)
                 
-                # Выбор метаболита через selectbox
                 metabolite_cols = [col for col in df.columns 
-                                if col.lower() not in ['Drug', 'Experiment date', 'Group', 'Concentration']]
+                                if col not in ['Drug', 'Experiment date', 'Group', 'Concentration']]
                 
                 st.selectbox(
                     f"Выберите метаболит ({len(metabolite_cols)} доступно)",
@@ -221,70 +378,125 @@ def metabolomika_app():
                     key="metabolite_selector"
                 )
                 
-                # Добавляем интерфейс для расчета Fold Change
                 st.subheader("Анализ Fold Change")
                 fc_mode = st.radio(
                     "Режим расчета Fold Change",
-                    ('ratio (B/A)', 'difference ((B-A)/A)'),
-                    index=0
+                    ('ratio (B/A)', 'difference ((B-A)/A)', 'log₂(B/A)'),
+                    index=['ratio (B/A)', 'difference ((B-A)/A)', 'log₂(B/A)'].index(st.session_state.fc_mode)
                 )
                 calculate_fc = st.button("Рассчитать Fold Change")
             
-            # Отображение данных метаболитов
             display_metabolite_data(df)
             
-            # Расчет и отображение Fold Change по запросу
-            if calculate_fc and df is not None:
-                
-                # Определяем режим расчета
-                mode = 'ratio' if fc_mode == 'ratio (B/A)' else 'difference'
-                
-                # Рассчитываем Fold Change
-                fc_df = calculate_fold_change(df, mode=mode)
+            # Отображаем описательную статистику исходных данных
+            st.subheader("Описательная статистика исходных концентраций")
+            
+            # Используйте один вызов для всех данных:
+            all_stats = calculate_descriptive_stats_new(
+                df,
+                group_cols=['Drug', 'Group', 'Concentration'],
+                value_cols=metabolite_cols
+            )
 
-                # ✅ Сохраняем в сессию
+            st.dataframe(all_stats)
+            
+            # Кнопка скачивания статистики исходных данных
+            output_original_stats = io.BytesIO()
+            with pd.ExcelWriter(output_original_stats, engine='openpyxl') as writer:
+                all_stats.to_excel(writer, index=False, sheet_name='Stats')
+            output_original_stats.seek(0)
+            
+            st.download_button(
+                label="Скачать статистику исходных данных",
+                data=output_original_stats,
+                file_name="original_metabolites_stats.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+            if calculate_fc and df is not None:
+                if fc_mode != st.session_state.fc_mode:
+                    st.session_state.fc_mode = fc_mode
+                
+                mode = 'ratio' if fc_mode == 'ratio (B/A)' else 'difference' if fc_mode == 'difference ((B-A)/A)' else 'log2_ratio'
+
+                fc_df = calculate_fold_change_with_pvalues(df, mode=mode)
+
                 st.session_state['fc_df'] = fc_df
                 
-                
-            if 'fc_df' in st.session_state:
-                
-                st.subheader("Результаты расчета Fold Change")
-                # Отображаем результаты
-                st.dataframe(st.session_state['fc_df'])
-
-                # Добавляем возможность скачать результаты
-                output_fc = io.BytesIO()
-                with pd.ExcelWriter(output_fc, engine='openpyxl') as writer:
-                    st.session_state['fc_df'].to_excel(writer, index=False, sheet_name='Fold_Change')
-                output_fc.seek(0)
-                
-                st.download_button(
-                    label="Скачать результаты Fold Change",
-                    data=output_fc,
-                    file_name="fold_change_results.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-
             if 'fc_df' in st.session_state:
                 fc_df = st.session_state['fc_df']
                 
-                available_drugs = sorted(fc_df['Drug'].unique())
-                available_metabolites = [col for col in fc_df.columns if col not in ['Drug', 'Experiment date', 'Group', 'Concentration']]
+                st.subheader(f"Результаты расчета Fold Change ({st.session_state.fc_mode})")
+                st.dataframe(fc_df)
 
+                # Кнопка скачивания полных результатов Fold Change
+                output_fc = io.BytesIO()
+                with pd.ExcelWriter(output_fc, engine='openpyxl') as writer:
+                    fc_df.to_excel(writer, index=False, sheet_name='Fold_Change')
+                output_fc.seek(0)
+                
+                st.download_button(
+                    label="Скачать полные результаты Fold Change",
+                    data=output_fc,
+                    file_name=f"fold_change_results_{st.session_state.fc_mode}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                
+                # Графики Fold Change
+                available_drugs = sorted(fc_df['Drug'].unique())
+                available_metabolites = [col for col in fc_df.columns 
+                                       if col not in ['Drug', 'Experiment date', 'Group', 'Concentration']]
+                
                 if 'show_plot' not in st.session_state:
                     st.session_state['show_plot'] = False
-
+                
                 with st.form("plot_form"):
-                    selected_drugs = st.multiselect("Выберите препарат(ы)", available_drugs, default=available_drugs, key="drug_select")
-                    selected_metabolites = st.multiselect("Выберите метаболиты", available_metabolites, default=available_metabolites, key="met_select")
+                    selected_drugs = st.multiselect(
+                        "Выберите препарат(ы)", 
+                        available_drugs, 
+                        default=available_drugs, 
+                        key="drug_select"
+                    )
+                    selected_metabolites = st.multiselect(
+                        "Выберите метаболиты", 
+                        available_metabolites, 
+                        default=available_metabolites, 
+                        key="met_select"
+                    )
                     submitted = st.form_submit_button("Перерисовать график")
-
+                    
                     if submitted:
                         st.session_state['show_plot'] = True
+                
 
                 if st.session_state['show_plot']:
-                    plot_fold_change(fc_df, selected_drugs, selected_metabolites)    
+                    plot_fold_change(fc_df, selected_drugs, selected_metabolites)
 
-# Запуск приложения
-if __name__ == "__main__":
-    metabolomika_app()
+
+
+
+                    
+                    # Добавляем Volcano Plot только для режима log₂(B/A)
+                    if st.session_state.fc_mode == 'log₂(B/A)':
+
+                        st.subheader("Данные для Volcano Plot")
+
+                        st.dataframe(st.session_state['fc_df'])
+
+                        st.subheader("Volcano Plot")
+                        st.write("""
+                        **Интерпретация Volcano Plot:**
+                        - Точки в верхних правом/левом углах — значимые изменения (большой |log2FC| и низкий p-value).
+                        - Горизонтальная линия — порог значимости (p < 0.05).
+                        - Вертикальные линии — порог изменения (|log2FC| > 1).
+                        """)
+                        
+                        # Выбираем препараты для Volcano Plot (можно ограничить выбор)
+                        volcano_drugs = st.multiselect(
+                            "Выберите препараты для Volcano Plot",
+                            selected_drugs,
+                            default=selected_drugs,
+                            key="volcano_drugs"
+                        )
+                        
+                        plot_volcano(st.session_state['fc_df'], volcano_drugs)
