@@ -167,10 +167,20 @@ def plot_fold_change(fc_df, selected_drugs, selected_metabolites):
     else:
         baseline = 1.0  # fallback
     
+    # Фильтруем данные и исключаем колонки с p-value
     data = fc_df[
-        (fc_df['Drug'].isin(selected_drugs)) & (fc_df['Group'] == 'test')
+        (fc_df['Drug'].isin(selected_drugs)) & 
+        (fc_df['Group'] == 'test')
     ].copy()
-
+    
+    # Исключаем колонки с p-value из выбранных метаболитов
+    selected_metabolites = [m for m in selected_metabolites if not m.endswith('(pvalue)')]
+    
+    # Проверяем, что остались метаболиты для отображения
+    if not selected_metabolites:
+        st.warning("Нет метаболитов для отображения после фильтрации p-value.")
+        return
+    
     long_df = data.melt(
         id_vars=['Drug', 'Concentration'],
         value_vars=selected_metabolites,
@@ -429,8 +439,13 @@ def metabolomika_app():
                 
                 # Графики Fold Change
                 available_drugs = sorted(fc_df['Drug'].unique())
-                available_metabolites = [col for col in fc_df.columns 
-                                       if col not in ['Drug', 'Group', 'Concentration']]
+                
+                # Получаем список метаболитов, исключая p-value и служебные колонки
+                available_metabolites = [
+                    col for col in fc_df.columns 
+                    if col not in ['Drug', 'Group', 'Concentration'] 
+                    and not col.endswith('(pvalue)')
+                ]
                 
                 if 'show_plot' not in st.session_state:
                     st.session_state['show_plot'] = False
@@ -475,4 +490,4 @@ def metabolomika_app():
                             key="volcano_drugs"
                         )
                         
-                        plot_volcano(st.session_state['fc_df'], volcano_drugs)
+                        plot_volcano(fc_df, volcano_drugs)
