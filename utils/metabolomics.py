@@ -1,10 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime
 import io
-import seaborn as sns
-import matplotlib.pyplot as plt
 import plotly.express as px
 from scipy.stats import ttest_ind
 
@@ -39,7 +36,7 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
     
     # Собираем метаболиты и их p-values
     metabolite_cols = [col for col in volcano_df.columns 
-                      if col not in ['Drug', 'Experiment date', 'Group', 'Concentration'] 
+                      if col not in ['Drug', 'Group', 'Concentration'] 
                       and not col.endswith('(pvalue)')]
     
     # Преобразуем в "длинный" формат
@@ -149,10 +146,6 @@ def calculate_descriptive_stats_new(df, group_cols, value_cols):
         values='value'
     ).reset_index()
     
-    # Очищаем повторяющиеся значения в группирующих колонках
-    #for col in group_cols:
-        #stats[col] = stats[col].where(stats[col] != stats[col].shift(), '')
-    
     # Возвращаем к нормальному порядку колонок
     stats.columns.name = None
     column_order = group_cols + ['Parameter'] + value_cols
@@ -219,7 +212,7 @@ def calculate_fold_change_with_pvalues(df, mode='ratio'):
     Предполагает равенство дисперсий в группах.
     """
     metabolite_cols = [col for col in df.columns 
-                      if col not in ['Drug', 'Experiment date', 'Group', 'Concentration']]
+                      if col not in ['Drug', 'Group', 'Concentration']]
     
     results = []
     
@@ -235,7 +228,6 @@ def calculate_fold_change_with_pvalues(df, mode='ratio'):
         # Добавляем строку "контроль против контроля"
         control_row = {
             'Drug': drug,
-            'Experiment date': f"{control_data['Experiment date'].min()} — {control_data['Experiment date'].max()}",
             'Group': 'control_vs_control',
             'Concentration': control_data['Concentration'].mean()
         }
@@ -255,7 +247,6 @@ def calculate_fold_change_with_pvalues(df, mode='ratio'):
             
             result_row = {
                 'Drug': drug,
-                'Experiment date': test_subset['Experiment date'].iloc[0],
                 'Group': 'test',
                 'Concentration': conc
             }
@@ -297,15 +288,11 @@ def load_and_preprocess_data(uploaded_file):
         df = pd.read_excel(uploaded_file)
         
         # Проверка обязательных колонок
-        required_columns = ['Drug', 'Experiment date', 'Group', 'Concentration']
+        required_columns = ['Drug', 'Group', 'Concentration']
         for col in required_columns:
             if col not in df.columns:
                 st.error(f"Отсутствует обязательная колонка: {col}")
                 return None
-        
-        # Предобработка даты
-        if 'Experiment date' in df.columns:
-            df['Experiment date'] = pd.to_datetime(df['Experiment date'], errors='coerce').dt.date
         
         # Приведение группы к нижнему регистру и проверка допустимых значений
         if 'Group' in df.columns:
@@ -353,7 +340,6 @@ def metabolomika_app():
                 with st.expander("Детали по препаратам"):
                     for drug in sorted(df['Drug'].unique()):
                         drug_data = df[df['Drug'] == drug]
-                        drug_dates = drug_data['Experiment date']
                         
                         control_counts = drug_data['Group'].value_counts().to_dict()
                         control_info = ", ".join([f"{k}: {v}" for k, v in control_counts.items()])
@@ -363,13 +349,12 @@ def metabolomika_app():
                         
                         st.write(f"""
                         **{drug}**  
-                        • Даты: {drug_dates.min()} - {drug_dates.max()}  
                         • Контрольные группы: {control_info}  
                         • Диапазон концентраций (Test): {conc_range}
                         """)
                 
                 metabolite_cols = [col for col in df.columns 
-                                if col not in ['Drug', 'Experiment date', 'Group', 'Concentration']]
+                                if col not in ['Drug', 'Group', 'Concentration']]
                 
                 st.selectbox(
                     f"Выберите метаболит ({len(metabolite_cols)} доступно)",
@@ -445,7 +430,7 @@ def metabolomika_app():
                 # Графики Fold Change
                 available_drugs = sorted(fc_df['Drug'].unique())
                 available_metabolites = [col for col in fc_df.columns 
-                                       if col not in ['Drug', 'Experiment date', 'Group', 'Concentration']]
+                                       if col not in ['Drug', 'Group', 'Concentration']]
                 
                 if 'show_plot' not in st.session_state:
                     st.session_state['show_plot'] = False
@@ -472,17 +457,8 @@ def metabolomika_app():
                 if st.session_state['show_plot']:
                     plot_fold_change(fc_df, selected_drugs, selected_metabolites)
 
-
-
-
-                    
                     # Добавляем Volcano Plot только для режима log₂(B/A)
                     if st.session_state.fc_mode == 'log₂(B/A)':
-
-                        st.subheader("Данные для Volcano Plot")
-
-                        st.dataframe(st.session_state['fc_df'])
-
                         st.subheader("Volcano Plot")
                         st.write("""
                         **Интерпретация Volcano Plot:**
