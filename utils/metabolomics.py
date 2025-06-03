@@ -5,11 +5,6 @@ import io
 import plotly.express as px
 from scipy.stats import ttest_ind
 
-# Инициализация session state для fc_mode, если его еще нет
-if "fc_mode" not in st.session_state:
-    st.session_state["fc_mode"] = 'ratio (B/A)'  # Значение по умолчанию
-
-
 def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold=1.0):
     """
     Строит Volcano Plot с реальными p-values.
