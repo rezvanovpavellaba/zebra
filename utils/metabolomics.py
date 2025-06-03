@@ -225,15 +225,12 @@ def calculate_fold_change_with_pvalues(df, mode='ratio'):
                       if col not in ['Drug', 'Group', 'Concentration']]
     
     results = []
+    warnings = []
     
     for drug in df['Drug'].unique():
         drug_data = df[df['Drug'] == drug]
         control_data = drug_data[drug_data['Group'] == 'control_neg']
         test_data = drug_data[drug_data['Group'] == 'test']
-        
-        if len(control_data) < 2 or len(test_data) < 2:
-            st.warning(f"Недостаточно данных для {drug}. Нужно хотя бы 2 повтора в control и test.")
-            continue
         
         # Добавляем строку "контроль против контроля"
         control_row = {
@@ -243,12 +240,12 @@ def calculate_fold_change_with_pvalues(df, mode='ratio'):
         }
         for metabolite in metabolite_cols:
             if mode == 'ratio':
-                control_row[metabolite] = 1.0
+                control_row[metabolite] = 1.0 #(проверено в Excel) т.к число деленное на само себя
             elif mode == 'difference':
-                control_row[metabolite] = 0.0
+                control_row[metabolite] = 0.0 #(проверено в Excel) т.к 0 в числителе
             elif mode == 'log2_ratio':
-                control_row[metabolite] = 0.0
-            control_row[f'{metabolite} (pvalue)'] = 1.0  # p-value для контроля = 1
+                control_row[metabolite] = 0.0 #(проверено в Excel) т.к правила вычисления логарифма
+            control_row[f'{metabolite} (pvalue)'] = 1.0  # p-value для контроля = 1 (проверено в Excel)
         results.append(control_row)
         
         # Обрабатываем тестовые группы
@@ -265,6 +262,13 @@ def calculate_fold_change_with_pvalues(df, mode='ratio'):
                 control_vals = control_data[metabolite].values
                 test_vals = test_subset[metabolite].values
                 
+                # Проверка количества данных
+                if len(control_vals) < 2 or len(test_vals) < 2:  # Хотя бы 2 точки в тесте для FC
+                    p_value = None
+                    if len(test_vals) < 2:
+                        warnings.append(f"{metabolite} (Drug: {drug}, Conc: {conc})")
+                    continue
+                
                 # Рассчитываем Fold Change
                 control_mean = np.mean(control_vals)
                 if control_mean == 0:
@@ -276,20 +280,31 @@ def calculate_fold_change_with_pvalues(df, mode='ratio'):
                     elif mode == 'difference':
                         fc = (np.mean(test_vals) - control_mean) / control_mean
                     elif mode == 'log2_ratio':
-                        fc = np.log2(ratio) if ratio > 0 else None
+                        fc = np.log2(ratio) if ratio > 0 else None #(проверено в Excel) т.к нельзя вычислить логарифм нуля
                 
                 # Классический t-тест Стьюдента (равные дисперсии)
                 try:
-                    _, p_value = ttest_ind(control_vals, test_vals, equal_var=True)
+                    _, p_value = ttest_ind(control_vals, test_vals)
                 except:
-                    p_value = 1.0  # в случае ошибки
+                    p_value = None  # в случае ошибки
                 
                 result_row[metabolite] = fc
                 result_row[f'{metabolite} (pvalue)'] = p_value
             
             results.append(result_row)
     
-    return pd.DataFrame(results)
+    # Создаём DataFrame
+    result_df = pd.DataFrame(results)
+    
+    # Переупорядочиваем столбцы: сначала все обычные, затем все p-value
+    non_pvalue_cols = [col for col in result_df.columns if '(pvalue)' not in col]
+    pvalue_cols = [col for col in result_df.columns if '(pvalue)' in col]
+    
+    # Упорядочиваем столбцы
+    ordered_cols = non_pvalue_cols + pvalue_cols
+    result_df = result_df[ordered_cols]
+    
+    return result_df, warnings
 
 
 def load_and_preprocess_data(uploaded_file):
@@ -345,10 +360,10 @@ def metabolomika_app():
                 st.subheader("Общая информация о загруженных данных")
                 
                 with st.expander(f"Уникальные препараты ({len(df['Drug'].unique())})"):
-                    st.write(", ".join(sorted(df['Drug'].unique())))
+                    st.write(", ".join(df['Drug'].unique()))
                 
                 with st.expander("Детали по препаратам"):
-                    for drug in sorted(df['Drug'].unique()):
+                    for drug in df['Drug'].unique():
                         drug_data = df[df['Drug'] == drug]
                         
                         control_counts = drug_data['Group'].value_counts().to_dict()
@@ -368,7 +383,7 @@ def metabolomika_app():
                 
                 st.selectbox(
                     f"Выберите метаболит ({len(metabolite_cols)} доступно)",
-                    sorted(metabolite_cols),
+                    metabolite_cols,
                     index=0,
                     key="metabolite_selector"
                 )
@@ -414,15 +429,31 @@ def metabolomika_app():
                 
                 mode = 'ratio' if fc_mode == 'ratio (B/A)' else 'difference' if fc_mode == 'difference ((B-A)/A)' else 'log2_ratio'
 
-                fc_df = calculate_fold_change_with_pvalues(df, mode=mode)
+                fc_df,warnings_fc = calculate_fold_change_with_pvalues(df, mode=mode)
 
                 st.session_state['fc_df'] = fc_df
+                st.session_state['warnings_fc'] = warnings_fc
                 
             if 'fc_df' in st.session_state:
                 fc_df = st.session_state['fc_df']
+                warnings_fc = st.session_state['warnings_fc']
                 
                 st.subheader(f"Результаты расчета Fold Change ({st.session_state.fc_mode})")
                 st.dataframe(fc_df)
+
+                with st.sidebar:
+
+                    if len(warnings_fc) !=0:
+
+                        selected_warnings_fc = st.selectbox(
+                            f"Отчет об ошибках в расчётах ({len(warnings_fc)} всего)",
+                            warnings_fc,
+                            index=0,
+                            key="warnings_fc_select"
+                        )
+
+                        st.error(f"Недостаточно данных для {selected_warnings_fc}, проверьте исходные данные на количество повторностей")
+                        
 
                 # Кнопка скачивания полных результатов Fold Change
                 output_fc = io.BytesIO()
@@ -438,8 +469,8 @@ def metabolomika_app():
                 )
                 
                 # Графики Fold Change
-                available_drugs = sorted(fc_df['Drug'].unique())
-                
+                available_drugs = fc_df['Drug'].unique()
+
                 # Получаем список метаболитов, исключая p-value и служебные колонки
                 available_metabolites = [
                     col for col in fc_df.columns 
