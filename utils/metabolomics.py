@@ -6,7 +6,7 @@ import plotly.express as px
 from scipy.stats import ttest_ind
 
 # Инициализация session state для fc_mode, если его еще нет
-if 'fc_mode' not in st.session_state:
+if "fc_mode" not in st.session_state:
     st.session_state["fc_mode"] = 'ratio (B/A)'  # Значение по умолчанию
 
 
