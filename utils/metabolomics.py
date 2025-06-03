@@ -160,9 +160,9 @@ def plot_fold_change(fc_df, selected_drugs, selected_metabolites):
         return
     
     # Определяем базовое значение линии в зависимости от режима
-    if st.session_state.fc_mode == 'ratio (B/A)':
+    if st.session_state["fc_mode"] == 'ratio (B/A)':
         baseline = 1.0
-    elif st.session_state.fc_mode in ['difference ((B-A)/A)', 'log₂(B/A)']:
+    elif st.session_state["fc_mode"] in ['difference ((B-A)/A)', 'log₂(B/A)']:
         baseline = 0.0
     else:
         baseline = 1.0  # fallback
@@ -196,9 +196,9 @@ def plot_fold_change(fc_df, selected_drugs, selected_metabolites):
         y='FoldChange',
         color='Drug_Conc',
         barmode='group',
-        title=f"Fold Change по метаболитам ({st.session_state.fc_mode})",
+        title=f"Fold Change по метаболитам ({st.session_state["fc_mode"]})",
         labels={
-            "FoldChange": f"Fold Change ({st.session_state.fc_mode})",
+            "FoldChange": f"Fold Change ({st.session_state["fc_mode"]})",
             "Metabolite": "Метаболиты"
         },
         height=600
@@ -392,7 +392,7 @@ def metabolomika_app():
                 fc_mode = st.radio(
                     "Режим расчета Fold Change",
                     ('ratio (B/A)', 'difference ((B-A)/A)', 'log₂(B/A)'),
-                    index=['ratio (B/A)', 'difference ((B-A)/A)', 'log₂(B/A)'].index(st.session_state.fc_mode)
+                    index=['ratio (B/A)', 'difference ((B-A)/A)', 'log₂(B/A)'].index(st.session_state["fc_mode"])
                 )
                 calculate_fc = st.button("Рассчитать Fold Change")
             
@@ -424,8 +424,8 @@ def metabolomika_app():
             )
             
             if calculate_fc and df is not None:
-                if fc_mode != st.session_state.fc_mode:
-                    st.session_state.fc_mode = fc_mode
+                if fc_mode != st.session_state["fc_mode"]:
+                    st.session_state["fc_mode"] = fc_mode
                 
                 mode = 'ratio' if fc_mode == 'ratio (B/A)' else 'difference' if fc_mode == 'difference ((B-A)/A)' else 'log2_ratio'
 
@@ -438,7 +438,7 @@ def metabolomika_app():
                 fc_df = st.session_state['fc_df']
                 warnings_fc = st.session_state['warnings_fc']
                 
-                st.subheader(f"Результаты расчета Fold Change ({st.session_state.fc_mode})")
+                st.subheader(f"Результаты расчета Fold Change ({st.session_state["fc_mode"]})")
                 st.dataframe(fc_df)
 
                 with st.sidebar:
@@ -464,7 +464,7 @@ def metabolomika_app():
                 st.download_button(
                     label="Скачать полные результаты Fold Change",
                     data=output_fc,
-                    file_name=f"fold_change_results_{st.session_state.fc_mode}.xlsx",
+                    file_name=f"fold_change_results_{st.session_state["fc_mode"]}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
                 
@@ -504,7 +504,7 @@ def metabolomika_app():
                     plot_fold_change(fc_df, selected_drugs, selected_metabolites)
 
                     # Добавляем Volcano Plot только для режима log₂(B/A)
-                    if st.session_state.fc_mode == 'log₂(B/A)':
+                    if st.session_state["fc_mode"] == 'log₂(B/A)':
                         st.subheader("Volcano Plot")
                         st.write("""
                         **Интерпретация Volcano Plot:**
