@@ -963,7 +963,7 @@ def metabolomika_app():
 
                     # Добавляем Volcano Plot только для режима log₂(B/A)
                     if st.session_state["fc_mode"] == 'log₂(B/A)':
-                        st.subheader("Volcano Plot")
+                        st.subheader("Volcano Plot (для максимальной концентрации)")
                         st.write("""
                         **Интерпретация Volcano Plot:**
                         - Точки в верхних правом/левом углах — значимые изменения (большой |log2FC| и низкий p-value)
@@ -973,6 +973,9 @@ def metabolomika_app():
                         - log2FC: 0.58 (1.5x), 1.0 (2x)
                         - p-value: 0.001 (0.1%), 0.01 (1%), 0.05 (5%), 0.1 (10%)
                         """)
+
+                        if 'show_vulcano_plot' not in st.session_state:
+                            st.session_state['show_vulcano_plot'] = False
                         
                         # Создаем отдельную форму для Volcano Plot
                         with st.form("volcano_form"):
@@ -1040,7 +1043,10 @@ def metabolomika_app():
                             
                             submitted_volcano = st.form_submit_button("Построить Volcano Plot")
 
-                        if submitted_volcano and volcano_drugs:
+                            if submitted_volcano:
+                               st.session_state['show_vulcano_plot'] = True
+
+                        if st.session_state['show_vulcano_plot'] and volcano_drugs:
                             significant_df = plot_volcano(
                                 fc_df, 
                                 volcano_drugs, 
