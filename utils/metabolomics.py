@@ -258,16 +258,17 @@ def calculate_fold_change_with_pvalues(df, mode='ratio'):
     return result_df, warnings
 
 
-def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold=1.0):
+def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold=1.0, 
+                custom_colors=None, show_legend=True, 
+                hline_color='red', vline_color='gray'):
     """
-    Строит Volcano Plot с реальными p-values.
-    Данные берутся из fc_df (должны быть колонки '*_pvalue').
+    Улучшенный Volcano Plot с фильтрацией None/NaN значений и раздельной настройкой цветов линий
     """
     if not selected_drugs:
         st.warning("Выберите препараты для Volcano Plot.")
         return
     
-    # Фильтруем данные: только тестовая группа и максимальная концентрация
+    # Фильтрация данных
     volcano_data = []
     for drug in selected_drugs:
         drug_data = fc_df[(fc_df['Drug'] == drug) & (fc_df['Group'] == 'test')]
@@ -282,37 +283,62 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
     
     volcano_df = pd.concat(volcano_data)
     
-    # Собираем метаболиты и их p-values
+    # Подготовка данных с фильтрацией None/NaN
     metabolite_cols = [col for col in volcano_df.columns 
-                      if col not in ['Drug', 'Group', 'Concentration'] 
-                      and not col.endswith('(pvalue)')]
+                     if col not in ['Drug', 'Group', 'Concentration'] 
+                     and not col.endswith('(pvalue)')]
     
-    # Преобразуем в "длинный" формат
     long_data = []
     for _, row in volcano_df.iterrows():
         for metabolite in metabolite_cols:
             log2fc = row[metabolite]
-            p_value = row[f'{metabolite} (pvalue)']
+            p_value = row.get(f'{metabolite} (pvalue)', None)
             
+            # Пропускаем точки с отсутствующими значениями
+            if pd.isna(log2fc) or pd.isna(p_value) or p_value is None or log2fc is None:
+                continue
+                
+            # Пропускаем нулевые p-value (чтобы избежать деления на ноль в логарифме)
+            if p_value <= 0:
+                continue
+                
             long_data.append({
                 'Drug': row['Drug'],
                 'Concentration': row['Concentration'],
                 'Metabolite': metabolite,
                 'log2FC': log2fc,
                 'p_value': p_value,
-                '-log10(p_value)': -np.log10(p_value) if p_value > 0 else 10  # избегаем деления на 0
+                '-log10(p_value)': -np.log10(p_value)
             })
+    
+    if not long_data:
+        st.error("Нет данных после фильтрации None/NaN значений.")
+        return
     
     long_df = pd.DataFrame(long_data)
     
-    # Строим график
+    # Настройка цветов
+    color_discrete_map = None
+    if custom_colors:
+        color_discrete_map = {drug: color for drug, color in custom_colors.items()}
+    
+    # Рассчитываем позиции для делений на оси Y
+    p_value_ticks = {
+        0.001: -np.log10(0.001),  # 3.0
+        0.01: -np.log10(0.01),    # 2.0
+        0.05: -np.log10(0.05),     # ~1.3
+        0.1: -np.log10(0.1)        # 1.0
+    }
+    
+    # Создание графика
     fig = px.scatter(
         long_df,
         x='log2FC',
         y='-log10(p_value)',
         color='Drug',
+        color_discrete_map=color_discrete_map,
         hover_data=['Metabolite', 'Concentration', 'p_value'],
-        title=f"Volcano Plot (макс. концентрация, p < {p_value_threshold}, |log2FC| > {log2fc_threshold})",
+        title=f"Volcano Plot (p < {p_value_threshold}, |log2FC| > {log2fc_threshold})",
         labels={
             'log2FC': 'log₂(Fold Change)',
             '-log10(p_value)': '-log₁₀(p-value)'
@@ -320,23 +346,51 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
         height=600
     )
     
-    # Добавляем пороговые линии
-    fig.add_shape(
-        type='line',
-        x0=-log2fc_threshold,
-        x1=log2fc_threshold,
-        y0=-np.log10(p_value_threshold),
-        y1=-np.log10(p_value_threshold),
-        line=dict(color='red', dash='dash'),
+    # Настройка осей с указанием порогов
+    fig.update_xaxes(
+        tickvals=[-3, -2, -log2fc_threshold, -1, 0, 1, log2fc_threshold, 2, 3],
+        ticktext=[
+            '-3', '-2', f'-{log2fc_threshold}', '-1', '0', 
+            '1', f'{log2fc_threshold}', '2', '3'
+        ]
     )
     
+    # Интеллектуальное размещение делений для оси Y
+    y_tickvals = [0, 1, 2, 3, 4, 5]
+    y_ticktext = ['0', '1', '2', '3', '4', '5']
+    
+    # Добавляем точное значение для выбранного p-value threshold
+    if p_value_threshold in p_value_ticks:
+        threshold_pos = p_value_ticks[p_value_threshold]
+        if threshold_pos not in y_tickvals:
+            y_tickvals.append(threshold_pos)
+            y_ticktext.append(f"{round(threshold_pos, 2)}")
+    
+    fig.update_yaxes(
+        tickvals=sorted(y_tickvals),
+        ticktext=[y_ticktext[y_tickvals.index(x)] for x in sorted(y_tickvals)]
+    )
+    
+    # Горизонтальная линия (p-value threshold)
+    fig.add_shape(
+        type='line',
+        x0=long_df['log2FC'].min() - 0.5,  # Динамический минимум по X
+        x1=long_df['log2FC'].max() + 0.5,  # Динамический максимум по X
+        y0=-np.log10(p_value_threshold),
+        y1=-np.log10(p_value_threshold),
+        line=dict(color=hline_color, dash='dash', width=2),
+        name=f'p-value threshold ({p_value_threshold})'
+    )
+    
+    # Вертикальные линии (log2FC thresholds)
     fig.add_shape(
         type='line',
         x0=-log2fc_threshold,
         x1=-log2fc_threshold,
         y0=0,
         y1=long_df['-log10(p_value)'].max() + 1,
-        line=dict(color='gray', dash='dot'),
+        line=dict(color=vline_color, dash='dot', width=2),
+        name=f'log2FC threshold (-{log2fc_threshold})'
     )
     
     fig.add_shape(
@@ -345,10 +399,32 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
         x1=log2fc_threshold,
         y0=0,
         y1=long_df['-log10(p_value)'].max() + 1,
-        line=dict(color='gray', dash='dot'),
+        line=dict(color=vline_color, dash='dot', width=2),
+        name=f'log2FC threshold ({log2fc_threshold})'
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    # Настройка легенды (без рамки)
+    fig.update_layout(
+        showlegend=show_legend,
+        legend=dict(
+            title_text='Препараты',
+            bgcolor='rgba(255,255,255,0.7)',
+            bordercolor='rgba(0,0,0,0)',
+            borderwidth=0
+        )
+    )
+    
+    # Конфигурация для скачивания в высоком качестве
+    config = {
+        'toImageButtonOptions': {
+            'format': 'jpeg',
+            'filename': 'volcano_plot',
+            'scale': 4,
+            'dpi': 600
+        }
+    }
+    
+    st.plotly_chart(fig, use_container_width=True, config=config)
 
 
 def calculate_descriptive_stats_new(df, group_cols, value_cols):
@@ -868,17 +944,88 @@ def metabolomika_app():
                         st.subheader("Volcano Plot")
                         st.write("""
                         **Интерпретация Volcano Plot:**
-                        - Точки в верхних правом/левом углах — значимые изменения (большой |log2FC| и низкий p-value).
-                        - Горизонтальная линия — порог значимости (p < 0.05).
-                        - Вертикальные линии — порог изменения (|log2FC| > 1).
+                        - Точки в верхних правом/левом углах — значимые изменения (большой |log2FC| и низкий p-value)
+                        - Горизонтальная линия — порог значимости (p < выбранное значение)
+                        - Вертикальные линии — порог изменения (|log2FC| > выбранное значение)
+                        - Доступные пороги:
+                        - log2FC: 0.58 (1.5x), 1.0 (2x)
+                        - p-value: 0.001 (0.1%), 0.01 (1%), 0.05 (5%), 0.1 (10%)
                         """)
                         
-                        # Выбираем препараты для Volcano Plot (можно ограничить выбор)
-                        volcano_drugs = st.multiselect(
-                            "Выберите препараты для Volcano Plot",
-                            selected_drugs,
-                            default=selected_drugs,
-                            key="volcano_drugs"
-                        )
-                        
-                        plot_volcano(fc_df, volcano_drugs)
+                        # Создаем отдельную форму для Volcano Plot
+                        with st.form("volcano_form"):
+                            # Независимый выбор препаратов
+                            volcano_drugs = st.multiselect(
+                                "Выберите препараты для Volcano Plot",
+                                available_drugs,
+                                default=available_drugs[:min(5, len(available_drugs))],  # Первые 5 по умолчанию
+                                key="volcano_drugs"
+                            )
+                            
+                            # Настройки отображения
+                            with st.expander("Настройки Volcano Plot"):
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    p_value_threshold = st.selectbox(
+                                        "Порог p-value (статистическая значимость)",
+                                        options=[0.001, 0.01, 0.05, 0.1],
+                                        index=2,  # 0.05 по умолчанию
+                                        format_func=lambda x: f"{x} ({'***' if x == 0.001 else '**' if x == 0.01 else '*' if x == 0.05 else 'ns'})",
+                                        help="Уровни значимости: *** - 0.1%, ** - 1%, * - 5%, ns - не значимо"
+                                    )
+                                    
+                                    log2fc_threshold = st.radio(
+                                        "Порог log2FC (кратность изменения)",
+                                        options=[1.0, 0.58],
+                                        index=0,  # 1.0 по умолчанию
+                                        format_func=lambda x: f"{x} ({'2-кратное' if x == 1.0 else '1.5-кратное'} изменение)",
+                                        horizontal=True
+                                    )
+                                
+                                with col2:
+                                    # Настройки отображения
+                                    show_legend = st.checkbox(
+                                        "Показывать легенду", 
+                                        value=True,
+                                        key='volcano_show_legend'
+                                    )
+                                    
+                                    # Раздельные настройки цветов линий
+                                    hline_color = st.color_picker(
+                                        "Цвет горизонтальной линии (p-value)",
+                                        value='#FF0000',
+                                        key='volcano_hline_color'
+                                    )
+                                    
+                                    vline_color = st.color_picker(
+                                        "Цвет вертикальных линий (log2FC)",
+                                        value='#808080',
+                                        key='volcano_vline_color'
+                                    )
+                                    
+                                    # Настройки цветов препаратов
+                                    volcano_colors = {}
+                                    if volcano_drugs:
+                                        st.write("Настройте цвета для препаратов:")
+                                        cols = st.columns(4)
+                                        for idx, drug in enumerate(volcano_drugs):
+                                            with cols[idx % 4]:
+                                                volcano_colors[drug] = st.color_picker(
+                                                    f"Цвет для {drug}",
+                                                    value=px.colors.qualitative.Plotly[idx % len(px.colors.qualitative.Plotly)],
+                                                    key=f"volcano_color_{drug}"
+                                                )
+                            
+                            submitted_volcano = st.form_submit_button("Построить Volcano Plot")
+
+                        if submitted_volcano and volcano_drugs:
+                            plot_volcano(
+                                fc_df, 
+                                volcano_drugs, 
+                                p_value_threshold=p_value_threshold,
+                                log2fc_threshold=log2fc_threshold,
+                                custom_colors=volcano_colors,
+                                show_legend=show_legend,
+                                hline_color=hline_color,
+                                vline_color=vline_color
+                            )
