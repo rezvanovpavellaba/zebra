@@ -263,10 +263,11 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
                 hline_color='red', vline_color='gray'):
     """
     Улучшенный Volcano Plot с фильтрацией None/NaN значений и раздельной настройкой цветов линий
+    Возвращает DataFrame с значимыми метаболитами
     """
     if not selected_drugs:
         st.warning("Выберите препараты для Volcano Plot.")
-        return
+        return None
     
     # Фильтрация данных
     volcano_data = []
@@ -279,7 +280,7 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
     
     if not volcano_data:
         st.error("Нет данных для Volcano Plot.")
-        return
+        return None
     
     volcano_df = pd.concat(volcano_data)
     
@@ -289,6 +290,8 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
                      and not col.endswith('(pvalue)')]
     
     long_data = []
+    significant_metabolites = []  # Для хранения значимых метаболитов
+    
     for _, row in volcano_df.iterrows():
         for metabolite in metabolite_cols:
             log2fc = row[metabolite]
@@ -302,20 +305,37 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
             if p_value <= 0:
                 continue
                 
+            # Проверяем, является ли метаболит значимым
+            is_significant = (abs(log2fc) >= log2fc_threshold) and (p_value <= p_value_threshold)
+            
             long_data.append({
                 'Drug': row['Drug'],
                 'Concentration': row['Concentration'],
                 'Metabolite': metabolite,
                 'log2FC': log2fc,
                 'p_value': p_value,
-                '-log10(p_value)': -np.log10(p_value)
+                '-log10(p_value)': -np.log10(p_value),
+                'Significant': is_significant
             })
+            
+            # Добавляем в список значимых метаболитов
+            if is_significant:
+                significant_metabolites.append({
+                    'Drug': row['Drug'],
+                    'Concentration': row['Concentration'],
+                    'Metabolite': metabolite,
+                    'log2FC': log2fc,
+                    'p_value': p_value,
+                    'Fold Change (ratio)': 2**log2fc if log2fc is not None else None,
+                    'Change Direction': 'Up' if log2fc > 0 else 'Down'
+                })
     
     if not long_data:
         st.error("Нет данных после фильтрации None/NaN значений.")
-        return
+        return None
     
     long_df = pd.DataFrame(long_data)
+    significant_df = pd.DataFrame(significant_metabolites)
     
     # Настройка цветов
     color_discrete_map = None
@@ -337,7 +357,7 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
         y='-log10(p_value)',
         color='Drug',
         color_discrete_map=color_discrete_map,
-        hover_data=['Metabolite', 'Concentration', 'p_value'],
+        hover_data=['Metabolite', 'Concentration', 'p_value', 'Significant'],
         title=f"Volcano Plot (p < {p_value_threshold}, |log2FC| > {log2fc_threshold})",
         labels={
             'log2FC': 'log₂(Fold Change)',
@@ -425,6 +445,8 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
     }
     
     st.plotly_chart(fig, use_container_width=True, config=config)
+    
+    return significant_df
 
 
 def calculate_descriptive_stats_new(df, group_cols, value_cols):
@@ -1019,7 +1041,7 @@ def metabolomika_app():
                             submitted_volcano = st.form_submit_button("Построить Volcano Plot")
 
                         if submitted_volcano and volcano_drugs:
-                            plot_volcano(
+                            significant_df = plot_volcano(
                                 fc_df, 
                                 volcano_drugs, 
                                 p_value_threshold=p_value_threshold,
@@ -1029,3 +1051,23 @@ def metabolomika_app():
                                 hline_color=hline_color,
                                 vline_color=vline_color
                             )
+                            
+                            if significant_df is not None and not significant_df.empty:
+                                st.subheader("Значимые метаболиты")
+                                st.write(f"Найдено {len(significant_df)} значимых метаболитов (p < {p_value_threshold}, |log2FC| > {log2fc_threshold})")
+                                st.dataframe(significant_df)
+                                
+                                # Кнопка скачивания значимых метаболитов
+                                output_significant = io.BytesIO()
+                                with pd.ExcelWriter(output_significant, engine='openpyxl') as writer:
+                                    significant_df.to_excel(writer, index=False, sheet_name='Significant_Metabolites')
+                                output_significant.seek(0)
+                                
+                                st.download_button(
+                                    label="Скачать таблицу значимых метаболитов",
+                                    data=output_significant,
+                                    file_name=f"significant_metabolites_p{p_value_threshold}_fc{log2fc_threshold}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                                )
+                            elif significant_df is not None and significant_df.empty:
+                                st.warning("Нет значимых метаболитов при заданных параметрах.")
