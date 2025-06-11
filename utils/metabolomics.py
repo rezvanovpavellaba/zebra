@@ -5,6 +5,8 @@ import io
 import plotly.express as px
 from scipy.stats import ttest_ind
 from utils.radio_unit import *
+import re
+from collections import defaultdict
 
 
 def plot_fold_change_horizontal(fc_df, selected_drugs, selected_metabolites, list_measure_unit_concentration,apply_colors,
@@ -76,7 +78,30 @@ def plot_fold_change_horizontal(fc_df, selected_drugs, selected_metabolites, lis
     else:  # Custom
         colors = ["#0037ff", "#ff0000", "#3cff00", "#dbf75f", "#046f22",
                  "#1de0fa", "#e928af", "#11e490", "#f7ff01", "#e16d07"]
-    
+
+    combo_order = (
+        fc_df[fc_df['Concentration'] != 0]
+          .assign(
+              combo=lambda d: d['Drug'] + ' (' 
+                             + d['Concentration'].astype(str) 
+                             + ' ' 
+                             + result_measure_unit_final[:len(d)]  # или ваш unit-список
+                             + ')'
+          )['combo']
+          .drop_duplicates()
+          .tolist()
+    )
+        
+    long_df = long_df.dropna(subset=['FoldChange']).reset_index(drop=True)
+
+    long_df['Препарат (Концентрация)'] = pd.Categorical(
+        long_df['Препарат (Концентрация)'],
+        categories=combo_order,
+        ordered=True
+    )
+
+    st.write(long_df)
+
     # Создаем график
     fig = px.bar(
         long_df,
@@ -84,7 +109,8 @@ def plot_fold_change_horizontal(fc_df, selected_drugs, selected_metabolites, lis
         y='FoldChange',
         color='Препарат (Концентрация)',
         barmode='group',
-        color_discrete_sequence=colors[:len(long_df['Препарат (Концентрация)'].unique())],
+        category_orders={'Препарат (Концентрация)': combo_order},
+        color_discrete_sequence=colors[:len(combo_order)],
         labels={
             "FoldChange": f'Fold Change ({st.session_state["fc_mode"]})',
             "Metabolite": "Метаболиты",
@@ -99,7 +125,7 @@ def plot_fold_change_horizontal(fc_df, selected_drugs, selected_metabolites, lis
     legend_y = -0.5 if legend_position == "Снизу" else 1.0 if legend_position == "Сверху" else 0.9
     legend_x = 0.5 if legend_position in ["Снизу", "Сверху"] else 1.1 if legend_position == "Справа" else -0.2
     
-
+    fig.update_layout(legend_traceorder='normal')
 
     fig.update_layout(
         plot_bgcolor='white',
@@ -119,7 +145,7 @@ def plot_fold_change_horizontal(fc_df, selected_drugs, selected_metabolites, lis
             tickfont=dict(color='black'),
             showline=False,
             mirror=False,
-            tickangle=45
+            tickangle=270
         ),
         yaxis=dict(
             title_font=dict(color='black'),
@@ -153,6 +179,11 @@ def plot_fold_change_horizontal(fc_df, selected_drugs, selected_metabolites, lis
         y0=baseline,
         y1=baseline,
         line=dict(color=baseline_color, dash="dash"),  # Используем новый параметр
+    )
+
+    fig.update_xaxes(
+        categoryorder='array',
+        categoryarray=selected_metabolites
     )
 
     # Конфигурация для скачивания
@@ -358,7 +389,6 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
         color='Drug',
         color_discrete_map=color_discrete_map,
         hover_data=['Metabolite', 'Concentration', 'p_value', 'Significant'],
-        title=f"Volcano Plot (p < {p_value_threshold}, |log2FC| > {log2fc_threshold})",
         labels={
             'log2FC': 'log₂(Fold Change)',
             '-log10(p_value)': '-log₁₀(p-value)'
@@ -372,7 +402,9 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
         ticktext=[
             '-3', '-2', f'-{log2fc_threshold}', '-1', '0', 
             '1', f'{log2fc_threshold}', '2', '3'
-        ]
+        ],
+        tickfont=dict(color='black'),
+        title_font=dict(color='black')
     )
     
     # Интеллектуальное размещение делений для оси Y
@@ -388,7 +420,9 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
     
     fig.update_yaxes(
         tickvals=sorted(y_tickvals),
-        ticktext=[y_ticktext[y_tickvals.index(x)] for x in sorted(y_tickvals)]
+        ticktext=[y_ticktext[y_tickvals.index(x)] for x in sorted(y_tickvals)],
+        tickfont=dict(color='black'),
+        title_font=dict(color='black')
     )
     
     # Горизонтальная линия (p-value threshold)
@@ -425,13 +459,32 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
     
     # Настройка легенды (без рамки)
     fig.update_layout(
+        font=dict(color='black'),
         showlegend=show_legend,
         legend=dict(
+            font=dict(color='black'),
+            title_font=dict(color='black'),
             title_text='Препараты',
             bgcolor='rgba(255,255,255,0.7)',
             bordercolor='rgba(0,0,0,0)',
             borderwidth=0
-        )
+        ),
+        margin=dict(
+        l=100,   # отступ слева
+        r=100,   # отступ справа
+        t=100,  # отступ сверху (под заголовок)
+        b=80,   # отступ снизу (для подписи оси X)
+        pad=20  # дополнительный «буфер»
+        ),
+        title={
+            'text': f"Volcano Plot (p < {p_value_threshold}, |log2FC| > {log2fc_threshold})",
+            'y':0.95,
+            'x':0.475,
+            'xanchor': 'center',
+            'yanchor': 'top',
+            'font': {'size': 16}
+        },
+
     )
     
     # Конфигурация для скачивания в высоком качестве
@@ -500,78 +553,6 @@ def calculate_descriptive_stats_new(df, group_cols, value_cols):
     return stats
 
 
-def plot_fold_change_vertical(fc_df, selected_drugs, selected_metabolites):
-    if not selected_drugs or not selected_metabolites:
-        st.info("Выберите хотя бы один препарат и метаболит для отображения графика.")
-        return
-    
-    # Определяем базовое значение линии в зависимости от режима
-    if st.session_state["fc_mode"] == 'ratio (B/A)':
-        baseline = 1.0
-    elif st.session_state["fc_mode"] in ['difference ((B-A)/A)', 'log₂(B/A)']:
-        baseline = 0.0
-    else:
-        baseline = 1.0  # fallback
-    
-    # Фильтруем данные и исключаем колонки с p-value
-    data = fc_df[
-        (fc_df['Drug'].isin(selected_drugs)) & 
-        (fc_df['Group'] == 'test')
-    ].copy()
-    
-    # Исключаем колонки с p-value из выбранных метаболитов
-    selected_metabolites = [m for m in selected_metabolites if not m.endswith('(pvalue)')]
-    
-    # Проверяем, что остались метаболиты для отображения
-    if not selected_metabolites:
-        st.warning("Нет метаболитов для отображения.")
-        return
-    
-    long_df = data.melt(
-        id_vars=['Drug', 'Concentration'],
-        value_vars=selected_metabolites,
-        var_name='Metabolite',
-        value_name='FoldChange'
-    )
-
-    long_df['Drug_Conc'] = long_df['Drug'].astype(str) + ' (' + long_df['Concentration'].astype(str) + ')'
-
-    # Рассчитываем динамическую высоту графика (примерно 40px на метаболит)
-    height = max(600, len(selected_metabolites) * 40)
-
-    fig = px.bar(
-        long_df,
-        y='Metabolite',
-        x='FoldChange',
-        color='Drug_Conc',
-        orientation='h',  # Горизонтальная ориентация для вертикального графика
-        barmode='group',
-        title=f"Fold Change по метаболитам ({st.session_state['fc_mode']})",
-        labels={
-            "FoldChange": f"Fold Change ({st.session_state['fc_mode']})",
-            "Metabolite": "Метаболиты"
-        },
-        height=height
-    )
-
-    # Добавляем вертикальную линию с учетом режима (теперь это вертикальная линия)
-    fig.add_shape(
-        type="line",
-        y0=-0.5,
-        y1=len(selected_metabolites)-0.5,
-        x0=baseline,
-        x1=baseline,
-        line=dict(color="red", dash="dash"),
-    )
-
-    # Настраиваем layout для лучшего отображения
-    fig.update_layout(
-        margin=dict(l=100, r=70, b=100, t=50, pad=4),
-        yaxis=dict(tickmode='linear'),
-        xaxis=dict(autorange=True)
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
 
 def calculate_fold_change_with_pvalues(df, mode='ratio'):
     """
@@ -837,13 +818,125 @@ def metabolomika_app():
                     file_name=f"fold_change_results_{st.session_state['fc_mode']}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
+
+                # Добавляем фильтрацию по log2FC только для режима log2
+
+                fc_df_for_diagram = fc_df.copy()
+
+                if st.session_state["fc_mode"] == 'log₂(B/A)':
+                    log2fc_threshold = st.radio(
+                        "Фильтрация по log2FC для графика столбчатых диаграмм:",
+                        options=[None, 1.0, 0.58],
+                        index=0,  # None по умолчанию (без фильтрации)
+                        format_func=lambda x: "Без фильтрации" if x is None else f"{x} ({'2-кратное' if x == 1.0 else '1.5-кратное'} изменение)",
+                        horizontal=True,
+                        key="horizontal_log2fc_threshold"
+                    )
+                else:
+                    log2fc_threshold = None
+
+
+                if log2fc_threshold is not None:
+                        # Определяем колонки, которые НЕ нужно фильтровать
+                        exclude_cols = ['Drug', 'Group', 'Concentration']
+                        
+                        # Получаем список колонок для фильтрации
+                        cols_to_filter = [col for col in fc_df_for_diagram.columns if col not in exclude_cols]
+                        
+                        # Применяем фильтрацию: заменяем значения, которые по модулю меньше порога, на None
+                        fc_df_for_diagram[cols_to_filter] = fc_df_for_diagram[cols_to_filter].apply(
+                            lambda x: x.where(abs(x) >= log2fc_threshold)
+                        )
+
+                        # Удаляем строки, где все значения (кроме exclude_cols) равны None
+                        # Создаем маску: True для строк, которые нужно сохранить (хотя бы одно не-None значение в cols_to_filter)
+                        mask = fc_df_for_diagram[cols_to_filter].notna().any(axis=1)
+                        fc_df_for_diagram = fc_df_for_diagram[mask]
+                        
+                        # Удаляем столбцы, которые полностью состоят из None (после фильтрации)
+                        fc_df_for_diagram.dropna(axis=1, how='all', inplace=True)
+                
+                if st.session_state["fc_mode"] == 'log₂(B/A)':
+                    st.subheader("Данные после фильтрации по log2FC")
+
+                    # Шаблон для поиска "(p-value)" в имени колонки
+                    pval_pattern = re.compile(r'\(pvalue\)\s*$', flags=re.IGNORECASE)
+
+                    # список колонок, которые надо удалить
+                    cols_to_drop = [col for col in fc_df_for_diagram.columns if pval_pattern.search(col)]
+
+                    # удаляем их
+                    fc_df_for_diagram = fc_df_for_diagram.drop(columns=cols_to_drop)
+
+                    # Отбираем только группу test
+                    df_test = fc_df_for_diagram[fc_df_for_diagram['Group'] == 'test']
+
+                    df_test.drop('Group', axis=1, inplace=True)
+                    
+                    coords = (
+                        df_test
+                        .set_index(['Drug', 'Concentration'])    # делаем составной индекс
+                        .stack()                                 # «разворачиваем» столбцы метаболитов
+                        .reset_index(name='Value')               # приводим обратно в датафрейм
+                        .rename(columns={'level_2': 'Metabolite'})
+                    )
+
+                    # оставляем только нужные колонки
+                    df_result_for_download = coords[['Drug', 'Concentration', 'Metabolite']]
+
+                    # Для ускорения: сделаем индекс по Drug и Concentration
+                    fc_indexed = fc_df.set_index(['Drug', 'Concentration'])
+
+                    def fetch_values(row):
+                        key = (row['Drug'], row['Concentration'])
+                        met = row['Metabolite']
+                        try:
+                            log2fc = fc_indexed.loc[key, met]
+                        except KeyError:
+                            log2fc = np.nan
+                        try:
+                            pval = fc_indexed.loc[key, f"{met} (pvalue)"]
+                        except KeyError:
+                            pval = np.nan
+                        return pd.Series({'log2FC': log2fc, 'pvalue': pval})
+
+                    # Применяем к каждой строке df_result
+                    df_result_for_download[['log2FC', 'pvalue']] = df_result_for_download.apply(fetch_values, axis=1)
+
+                    # 1) Fold Change (ratio) из log2FC
+                    #    просто обратно: ratio = 2**log2FC
+                    df_result_for_download['Fold Change (ratio)'] = 2 ** df_result_for_download['log2FC']
+
+                    # 2) Change Direction: «Up» если log2FC > 0, «Down» если < 0, иначе «No change»
+                    df_result_for_download['Change Direction'] = np.where(
+                        df_result_for_download['log2FC'] > 0, 'Up',
+                        np.where(df_result_for_download['log2FC'] < 0, 'Down', 'No change')
+                    )
+
+                    num_unique = df_result_for_download['Metabolite'].nunique()
+
+                    st.write(num_unique)
+
+                    st.dataframe(df_result_for_download)
+                    # Кнопка скачивания значимых метаболитов
+                    output_df_result_for_download = io.BytesIO()
+                    with pd.ExcelWriter(output_df_result_for_download, engine='openpyxl') as writer:
+                        df_result_for_download.to_excel(writer, index=False, sheet_name=f'Данные после фильтрации по log2FC {log2fc_threshold}')
+                    output_df_result_for_download.seek(0)
+                    
+                    st.download_button(
+                        label="Скачать таблицу данных после фильтрации по log2FC",
+                        data=output_df_result_for_download,
+                        file_name=f"Данные после фильтрации по log2FC {log2fc_threshold}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )           
                 
                 # Графики Fold Change
-                available_drugs = fc_df['Drug'].unique()
+                available_drugs = fc_df_for_diagram['Drug'].unique()
 
                 # Получаем список метаболитов, исключая p-value и служебные колонки
                 available_metabolites = [
-                    col for col in fc_df.columns 
+                    col for col in fc_df_for_diagram.columns 
                     if col not in ['Drug', 'Group', 'Concentration'] 
                     and not col.endswith('(pvalue)')
                 ]
@@ -866,7 +959,7 @@ def metabolomika_app():
                     for drug in selected_drugs:
                         # Получаем уникальные концентрации для данного препарата, исключая нулевые
                         drug_concentrations = [
-                            conc for conc in fc_df[fc_df['Drug'] == drug]['Concentration'].unique() 
+                            conc for conc in fc_df_for_diagram[fc_df_for_diagram['Drug'] == drug]['Concentration'].unique() 
                             if conc != 0  # Исключаем нулевые концентрации
                         ]
 
@@ -903,13 +996,14 @@ def metabolomika_app():
                         with col2:
   
                             opacity = st.slider("Прозрачность колонок", 0.1, 1.0, 0.8)
+
                             
                         with st.container(border=True):
                             # Добавляем возможность задать цвета для каждого столбца
                             if selected_drugs and selected_metabolites:
-                                unique_combinations = fc_df[
-                                    (fc_df['Drug'].isin(selected_drugs)) & 
-                                    (fc_df['Concentration'].isin([conc for drug in selected_drugs for conc in selected_concentrations[drug]]))
+                                unique_combinations = fc_df_for_diagram[
+                                    (fc_df_for_diagram['Drug'].isin(selected_drugs)) & 
+                                    (fc_df_for_diagram['Concentration'].isin([conc for drug in selected_drugs for conc in selected_concentrations[drug]]))
                                 ].groupby(['Drug', 'Concentration']).size().reset_index()
                                 
                                 custom_colors = []
@@ -923,7 +1017,7 @@ def metabolomika_app():
                                     with cols[idx % num_cols]:
                                         color = st.color_picker(
                                             f"Цвет для {row['Drug']} ({row['Concentration']})",
-                                            value="#1fb424",
+                                            value=px.colors.qualitative.Plotly[idx % len(px.colors.qualitative.Plotly)],
                                             key=f"color_{row['Drug']}_{row['Concentration']}"
                                         )
                                         custom_colors.append(color)
@@ -942,10 +1036,11 @@ def metabolomika_app():
 
                 if st.session_state['show_plot']:
                     # Фильтруем данные по выбранным концентрациям
-                    filtered_fc_df = fc_df[
-                        (fc_df['Drug'].isin(selected_drugs)) & 
-                        (fc_df['Concentration'].isin([conc for drug in selected_drugs for conc in selected_concentrations[drug]]))
+                    filtered_fc_df = fc_df_for_diagram[
+                        (fc_df_for_diagram['Drug'].isin(selected_drugs)) & 
+                        (fc_df_for_diagram['Concentration'].isin([conc for drug in selected_drugs for conc in selected_concentrations[drug]]))
                     ]
+                
                     
                     # В вызове функции добавьте параметр custom_colors:
                     plot_fold_change_horizontal(
@@ -973,6 +1068,10 @@ def metabolomika_app():
                         - log2FC: 0.58 (1.5x), 1.0 (2x)
                         - p-value: 0.001 (0.1%), 0.01 (1%), 0.05 (5%), 0.1 (10%)
                         """)
+
+                        # Графики Vulcano
+                        available_drugs = fc_df['Drug'].unique()
+
 
                         if 'show_vulcano_plot' not in st.session_state:
                             st.session_state['show_vulcano_plot'] = False
