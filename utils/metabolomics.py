@@ -100,8 +100,6 @@ def plot_fold_change_horizontal(fc_df, selected_drugs, selected_metabolites, lis
         ordered=True
     )
 
-    st.write(long_df)
-
     # Создаем график
     fig = px.bar(
         long_df,
@@ -915,7 +913,6 @@ def metabolomika_app():
 
                     num_unique = df_result_for_download['Metabolite'].nunique()
 
-                    st.write(num_unique)
 
                     st.dataframe(df_result_for_download)
                     # Кнопка скачивания значимых метаболитов
