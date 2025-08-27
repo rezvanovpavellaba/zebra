@@ -127,8 +127,6 @@ Pygments==2.18.0
 PyJWT==2.9.0
 pymongo==4.8.0
 Pympler==1.0.1
-PyMuPDF==1.24.7
-PyMuPDFb==1.24.6
 pyparsing==3.2.3
 pypng==0.20220715.0
 pyproject_hooks==1.0.0
@@ -200,4 +198,5 @@ wcwidth==0.2.6
 weasel==0.4.1
 webencodings==0.5.1
 wrapt==1.16.0
+
 
