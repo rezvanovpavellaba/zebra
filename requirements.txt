@@ -1,4 +1,4 @@
-altair==5.5.0
+altair==4.2.2
 anndata==0.8.0
 annotated-types==0.7.0
 anyio==3.6.2
@@ -190,6 +190,7 @@ wcwidth==0.2.6
 weasel==0.4.1
 webencodings==0.5.1
 wrapt==1.16.0
+
 
 
 
