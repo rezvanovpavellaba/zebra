@@ -163,7 +163,6 @@ smmap==5.0.2
 srsly==2.4.8
 stack-data==0.6.2
 statannot==0.2.3
-statsmodels==0.13.5
 streamlit==1.45.1
 streamlit-aggrid==1.0.5
 streamlit-authenticator==0.3.3
@@ -193,6 +192,7 @@ wcwidth==0.2.6
 weasel==0.4.1
 webencodings==0.5.1
 wrapt==1.16.0
+
 
 
 
