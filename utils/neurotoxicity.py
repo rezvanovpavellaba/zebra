@@ -4,6 +4,8 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 from matplotlib.cm import get_cmap
+import numpy as np
+import plotly.graph_objects as go
 
 
 # === УТИЛИТЫ ===
@@ -140,7 +142,7 @@ def render_sidebar_report(report: dict):
 def neurotoxicity_app():
     st.title("Анализ поведенческих данных DanioVision")
 
-    tab_upload, tab_analysis, tab_agg = st.tabs(["📁 Загрузка и просмотр", "⚙️ Анализ данных", "📊 Графики"])
+    tab_upload, tab_analysis, tab_agg, tab_calc = st.tabs(["📁 Загрузка и просмотр", "⚙️ Анализ данных", "📊 Графики","📐 Расчёты"])
     file_keys = ["1h", "4h", "12h", "24h"]
 
     for key in file_keys:
@@ -205,73 +207,160 @@ def neurotoxicity_app():
     # ⚙️ Вкладка анализа
     # =================
     with tab_analysis:
-        st.markdown("### ⚙️ Анализ по лункам с аномальным движением (Distance moved > 1000)")
+        st.markdown("### ⚙️ Анализ по лункам с Distance moved > 1000")
 
         all_dfs_loaded = all(st.session_state.get(f"{key}_data") is not None for key in file_keys)
         if not all_dfs_loaded:
             st.warning("Сначала загрузите и обработайте таблицы на вкладке «Загрузка и просмотр».")
         else:
-            for key in file_keys:
-                df = st.session_state[f"{key}_data"].copy()
+            selected_key = st.selectbox("Выберите временной интервал:", file_keys)
 
-                if len(df.columns) < 3:
-                    st.warning(f"Файл {key}: меньше 3 колонок — не могу определить well_id.")
-                    continue
-                well_col = df.columns[2]
+            df = st.session_state.get(f"{selected_key}_data")
+            raw_df = st.session_state.get(f"{selected_key}_raw")
+            if df is None or raw_df is None:
+                st.warning(f"Файл {selected_key} не загружен.")
+                st.stop()
 
-                dist_cols = [col for col in df.columns if isinstance(col, str) and "Distance moved" in col]
-                if not dist_cols:
-                    st.warning(f"Файл {key}: не найдена колонка 'Distance moved'.")
-                    continue
-                dist_col = dist_cols[0]
+            well_col = df.columns[2]
+            dist_cols = [col for col in df.columns if isinstance(col, str) and "Distance moved" in col]
+            if not dist_cols:
+                st.warning(f"Файл {selected_key}: не найдена колонка 'Distance moved'.")
+                st.stop()
+            dist_col = dist_cols[0]
 
-                df[dist_col] = pd.to_numeric(df[dist_col], errors="coerce")
+            df[dist_col] = pd.to_numeric(df[dist_col], errors="coerce")
+            raw_df[dist_col] = pd.to_numeric(raw_df[dist_col], errors="coerce")
 
-                high_wells = (
-                    df[df[dist_col] > 1000][well_col]
-                    .dropna()
-                    .astype(str)
-                    .unique()
-                    .tolist()
-                )
+            wells_all = [f"{r}{c}" for r in "ABCDEFGH" for c in range(1, 13)]
+            wells_present = raw_df[well_col].astype(str).dropna().unique().tolist()
+            wells_current = df[well_col].astype(str).dropna().unique().tolist()
+            wells_high = df[df[dist_col] > 1000][well_col].astype(str).dropna().unique().tolist()
+            removed_wells = list(set(wells_present) - set(wells_current))
 
-                st.markdown(f"### 📄 {key}")
-                if not high_wells:
-                    st.success("✅ Нет лунок с Distance moved > 1000")
-                    st.dataframe(df, use_container_width=True)
+            well_colors = []
+            for w in wells_all:
+                if w in removed_wells:
+                    color = "red"
+                elif w in wells_high:
+                    color = "yellow"
+                elif w in wells_current:
+                    color = "green"
                 else:
-                    st.error(f"⚠️ Обнаружены лунки с Distance moved > 1000: {high_wells}")
+                    color = "lightgray"
+                well_colors.append(color)
 
-                    ms_key = f"delete_{key}_{st.session_state[f'ver_{key}']}"
-                    selected_wells = st.multiselect(
-                        f"Выберите лунки для удаления из {key}",
-                        options=high_wells,
-                        key=ms_key
+            x_vals = [int(w[1:]) for w in wells_all]
+            y_vals = [8 - "ABCDEFGH".index(w[0]) for w in wells_all]
+
+            fig = go.Figure(data=go.Scatter(
+                x=x_vals,
+                y=y_vals,
+                mode='markers+text',
+                text=wells_all,
+                textposition='middle center',
+                marker=dict(size=35, color=well_colors, line=dict(color='black', width=1)),
+                hoverinfo='text'
+            ))
+
+            fig.update_layout(
+                title=f"{selected_key}: интерактивный планшет",
+                width=650,
+                height=500,
+                xaxis=dict(title=None, range=[0.5, 12.5], tickvals=list(range(1, 13))),
+                yaxis=dict(title=None, range=[0.5, 8.5], tickvals=list(range(1, 9)), ticktext=list("HGFEDCBA")),
+                margin=dict(l=20, r=20, t=40, b=20)
+            )
+
+            with st.expander("🧪 Планшет и удаление лунок", expanded=True):
+                col_left, col_right = st.columns([2.5, 1])
+
+                # --- Левая колонка: планшет ---
+                with col_left:
+                    st.plotly_chart(
+                        fig,
+                        use_container_width=False,
+                        config={
+                            "displayModeBar": False,
+                            "scrollZoom": False,
+                            "staticPlot": True
+                        }
                     )
+                    st.caption("🟢 валидная, 🟡 > 1000, 🔴 удалена, ⚪ нет данных")
 
-                    if st.button(f"Удалить выбранные лунки из {key}", key=f"remove_btn_{key}") and selected_wells:
-                        before = len(df)
-                        new_df = df[~df[well_col].astype(str).isin([str(x) for x in selected_wells])].reset_index(drop=True)
-                        st.session_state[f"{key}_data"] = new_df
-                        st.session_state[f"ver_{key}"] += 1
-                        removed = before - len(new_df)
-                        st.success(f"✅ Удалено {removed} строк, связанных с {len(selected_wells)} лунками: {selected_wells}")
-                        st.rerun()
+                # --- Правая колонка: управление лунками ---
+                with col_right:
+                    st.markdown("#### ❌ Удаление лунок")
+                    if wells_high:
+                        well_to_remove = st.selectbox("Лунка с Distance > 1000:", wells_high, key=f"select_remove_{selected_key}")
+                        rows_to_remove = df[df[well_col].astype(str) == well_to_remove]
+                        count_rows = rows_to_remove.shape[0]
+                        st.markdown(f"Будет удалено **{count_rows} строк**")
 
-                    st.dataframe(st.session_state[f"{key}_data"], use_container_width=True)
+                        if st.button("Удалить выбранную лунку"):
+                            df_new = df[df[well_col].astype(str) != well_to_remove].reset_index(drop=True)
+                            st.session_state[f"{selected_key}_data"] = df_new
+                            st.session_state[f"ver_{selected_key}"] += 1
+                            st.success(f"Удалено {count_rows} строк, связанных с лункой {well_to_remove}")
+                            st.rerun()
 
-                towrite = io.BytesIO()
-                with pd.ExcelWriter(towrite, engine="openpyxl") as writer:
-                    st.session_state[f"{key}_data"].to_excel(writer, index=False, sheet_name="Filtered")
-                towrite.seek(0)
-                st.download_button(
-                    label=f"⬇️ Скачать {key} как Excel",
-                    data=towrite,
-                    file_name=f"{key}_filtered.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key=f"dl_filtered_{key}"
-                )
-    
+                        # Показ данных по лунке с подсветкой
+                        with st.container():
+                            dist_col = next((col for col in rows_to_remove.columns if isinstance(col, str) and "Distance moved" in col), None)
+
+                            if dist_col:
+                                def highlight_dist(val):
+                                    if isinstance(val, (int, float)) and val > 1000:
+                                        return "background-color: #ffa8a8"
+                                    return ""
+
+                                styled = rows_to_remove.style.applymap(highlight_dist, subset=[dist_col])
+                                st.dataframe(styled, use_container_width=True)
+                            else:
+                                st.dataframe(rows_to_remove, use_container_width=True)
+                    else:
+                        st.info("Нет лунок с Distance > 1000 для удаления.")
+
+                    # === ВОССТАНОВЛЕНИЕ ЛУНОК ===
+                    if removed_wells:
+                        st.markdown("#### ♻️ Восстановление лунки")
+
+                        def well_sort_key(well: str):
+                            row = well[0]
+                            col = int(well[1:])
+                            return (row, col)
+
+                        well_to_restore = st.selectbox(
+                            "Выберите лунку для восстановления:",
+                            sorted(removed_wells, key=well_sort_key),
+                            key=f"restore_select_{selected_key}"
+                        )
+
+                        rows_to_restore = raw_df[raw_df[well_col].astype(str) == well_to_restore]
+                        count_restore = rows_to_restore.shape[0]
+                        st.markdown(f"Будет восстановлено **{count_restore} строк**")
+
+                        if st.button("Восстановить выбранную лунку"):
+                            current_df = st.session_state[f"{selected_key}_data"]
+
+                            # Исключаем дубликаты на всякий случай (если вдруг уже есть такие строки)
+                            # Добавляем строки в том порядке, как в raw_df (без сортировок)
+                            restored_df = pd.concat([current_df, rows_to_restore], ignore_index=True)
+
+                            # Восстанавливаем оригинальный порядок из raw_df:
+                            # просто фильтруем raw_df на все текущие лунки в restored_df
+                            current_wells = restored_df[well_col].astype(str).tolist()
+                            full_df = raw_df[raw_df[well_col].astype(str).isin(current_wells)].copy().reset_index(drop=True)
+
+                            st.session_state[f"{selected_key}_data"] = full_df
+                            st.session_state[f"ver_{selected_key}"] += 1
+                            st.success(f"Восстановлено {count_restore} строк по лунке {well_to_restore}")
+                            st.rerun()
+                    else:
+                        st.info("Нет удалённых лунок для восстановления.")
+
+            # Полная таблица
+            with st.expander("📋 Показать таблицу данных по всем лункам"):
+                st.dataframe(df, use_container_width=True)
     # ================
     # 📊 Вкладка агрегации
     # ================
@@ -282,7 +371,7 @@ def neurotoxicity_app():
 
         df = st.session_state.get(f"{key_selected}_data")
         if df is None:
-            st.warning("Сначала загрузите таблицу на вкладке «Загрузка и просмотр».")
+            st.warning("Сначала загрузите таблицы на вкладке «Загрузка и просмотр».")
         else:
             # === Определение ключевых колонок ===
             col_trial = df.columns[0]       # Trial
@@ -454,7 +543,140 @@ def neurotoxicity_app():
                     file_name=f"{key_selected}_velocity_plot.png",
                     mime="image/png"
                 )
+    
+    # ================
+    # 📐 Вкладка расчётов
+    # ================
+    with tab_calc:
+        st.markdown("### 📐 Расчёт Distance и Velocity по каждой лунке и сегментам (10-мин)")
 
+        key_selected_calc = st.selectbox("Выберите файл для расчётов:", file_keys, key="select_calc")
+
+        df = st.session_state.get(f"{key_selected_calc}_data")
+        if df is None:
+            st.warning("Сначала загрузите таблицы на вкладке «Загрузка и просмотр».")
+        else:
+            col_well = df.columns[2]
+            col_time = "Time"
+
+            dist_cols = [col for col in df.columns if isinstance(col, str) and "Distance moved" in col]
+            velocity_cols = [col for col in df.columns if isinstance(col, str) and "Velocity" in col]
+
+            if not dist_cols or not velocity_cols:
+                st.error("Отсутствуют необходимые колонки.")
+                st.stop()
+
+            col_dist = dist_cols[0]
+            col_velocity = velocity_cols[0]
+
+            df[col_dist] = pd.to_numeric(df[col_dist], errors="coerce")
+            df[col_velocity] = pd.to_numeric(df[col_velocity], errors="coerce")
+
+            time_order = df[col_time].dropna().unique().tolist()
+            time_mapping = {t: str((i + 1) * 2) for i, t in enumerate(time_order)}
+            df["TimeNumeric"] = df[col_time].map(time_mapping).astype(float)
+
+            original_well_order = df[col_well].dropna().astype(str).drop_duplicates().tolist()
+
+            def get_segment(tn: float) -> str:
+                try:
+                    tn = int(tn)
+                    if 2 <= tn <= 10:
+                        return "1"
+                    elif 12 <= tn <= 20:
+                        return "2"
+                    elif 22 <= tn <= 30:
+                        return "3"
+                    elif 32 <= tn <= 40:
+                        return "4"
+                    elif 42 <= tn <= 50:
+                        return "5"
+                    else:
+                        return "Other"
+                except:
+                    return "Invalid"
+
+            df["Segment"] = df["TimeNumeric"].apply(get_segment)
+
+            # === DISTANCE ===
+            total_df = df.groupby(col_well, sort=False)[col_dist].sum().reset_index()
+            total_df = total_df.rename(columns={col_dist: "Distance Total"})
+
+            seg_df = df.groupby([col_well, "Segment"], sort=False)[col_dist].sum().reset_index()
+            seg_pivot = seg_df.pivot(index=col_well, columns="Segment", values=col_dist).reset_index()
+            seg_pivot.columns.name = None
+            seg_pivot = seg_pivot.rename(columns={seg: f"D_{seg}" for seg in seg_pivot.columns if seg not in [col_well]})
+            result_dist = pd.merge(total_df, seg_pivot, on=col_well, how="left").fillna(0)
+
+            # === VELOCITY MEAN ===
+            vel_mean_df = (
+                df.groupby([col_well, "Segment"], sort=False)[col_velocity]
+                .mean().reset_index()
+                .pivot(index=col_well, columns="Segment", values=col_velocity)
+                .reset_index()
+                .fillna(0)
+            )
+            vel_mean_df.columns.name = None
+            vel_mean_df = vel_mean_df.rename(columns=lambda x: f"V_mean_{x}" if x != col_well else x)
+
+            # === VELOCITY VARIANCE ===
+            vel_var_df = (
+                df.groupby([col_well, "Segment"], sort=False)[col_velocity]
+                .var(ddof=1).reset_index()
+                .pivot(index=col_well, columns="Segment", values=col_velocity)
+                .reset_index()
+                .fillna(0)
+            )
+            vel_var_df.columns.name = None
+            vel_var_df = vel_var_df.rename(columns=lambda x: f"V_var_{x}" if x != col_well else x)
+
+            # === ОБЪЕДИНЕНИЕ ВСЕХ ===
+            merged_df = result_dist.merge(vel_mean_df, on=col_well, how="left")
+            merged_df = merged_df.merge(vel_var_df, on=col_well, how="left")
+
+            # === ДОБАВИМ ОТНОШЕНИЯ V_mean ===
+            def compute_ratio(df, num, denom):
+                col_n = f"V_mean_{num}"
+                col_d = f"V_mean_{denom}"
+                new_col = f"V_ratio_{num}_{denom}"
+                if col_n in df.columns and col_d in df.columns:
+                    df[new_col] = df[col_n] / df[col_d].replace(0, np.nan)
+                return df
+
+            for a, b in [("1", "2"), ("3", "2"), ("3", "4"), ("5", "4")]:
+                merged_df = compute_ratio(merged_df, a, b)
+
+            # === ПОРЯДОК КОЛОНОК ===
+            base_cols = [col_well, "Distance Total"]
+            dist_seg_cols = [f"D_{i}" for i in ["1", "2", "3", "4", "5"]]
+            vel_cols = []
+            for seg in ["1", "2", "3", "4", "5"]:
+                m = f"V_mean_{seg}"
+                v = f"V_var_{seg}"
+                if m in merged_df.columns and v in merged_df.columns:
+                    vel_cols += [m, v]
+            ratio_cols = [col for col in merged_df.columns if col.startswith("V_ratio_")]
+            final_cols = base_cols + dist_seg_cols + vel_cols + ratio_cols
+            merged_df = merged_df[[c for c in final_cols if c in merged_df.columns]]
+
+            # Порядок лунок
+            merged_df[col_well] = pd.Categorical(merged_df[col_well], categories=original_well_order, ordered=True)
+            merged_df = merged_df.sort_values(col_well).reset_index(drop=True)
+
+            st.dataframe(merged_df, use_container_width=True)
+
+            # Скачивание
+            towrite = io.BytesIO()
+            with pd.ExcelWriter(towrite, engine="openpyxl") as writer:
+                merged_df.to_excel(writer, index=False, sheet_name="Distance_Velocity_Summary")
+            towrite.seek(0)
+            st.download_button(
+                label="⬇️ Скачать таблицу расчётов",
+                data=towrite,
+                file_name=f"{key_selected_calc}_summary.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_summary_calc"
+            )
 
     # === САЙДБАР: динамический отчёт ===
     report = compute_deletion_report(file_keys)
