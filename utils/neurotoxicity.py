@@ -202,7 +202,7 @@ def neurotoxicity_app():
                     )
         else:
             st.warning("Пожалуйста, загрузите все 4 файла для продолжения.")
-
+    
     # =================
     # ⚙️ Вкладка анализа
     # =================
@@ -227,20 +227,43 @@ def neurotoxicity_app():
                 st.warning(f"Файл {selected_key}: не найдена колонка 'Distance moved'.")
                 st.stop()
             dist_col = dist_cols[0]
+            
+            #исходный фрейм (дальше используется, но без тихой замены - на Nan)
+            #df[dist_col] = pd.to_numeric(df[dist_col])
 
-            df[dist_col] = pd.to_numeric(df[dist_col], errors="coerce")
-            raw_df[dist_col] = pd.to_numeric(raw_df[dist_col], errors="coerce")
+            # НЕ меняем df[dist_col] напрямую
+            dist_numeric = pd.to_numeric(df[dist_col], errors="coerce")
 
             wells_all = [f"{r}{c}" for r in "ABCDEFGH" for c in range(1, 13)]
             wells_present = raw_df[well_col].astype(str).dropna().unique().tolist()
             wells_current = df[well_col].astype(str).dropna().unique().tolist()
-            wells_high = df[df[dist_col] > 1000][well_col].astype(str).dropna().unique().tolist()
+            wells_high = df[dist_numeric > 1000][well_col].astype(str).dropna().unique().tolist()
             removed_wells = list(set(wells_present) - set(wells_current))
 
+
+            def well_sort_key(well: str):
+                row = well[0]
+                col = int(well[1:])
+                return (row, col)
+
+            # === Новое: определение лунок с "-" ===
+            # Находим индекс первой поведенческой колонки
+            distance_start_idx = df.columns.get_loc(next(col for col in df.columns if isinstance(col, str) and "Distance moved" in col))
+            data_cols = df.columns[distance_start_idx:]
+
+            # Проверка на "-"
+            dash_mask = df[data_cols].astype(str).applymap(lambda x: x.strip() == "-")
+            wells_with_dash = df.loc[dash_mask.any(axis=1), well_col].astype(str).unique().tolist()
+
+            # Цвета
             well_colors = []
             for w in wells_all:
                 if w in removed_wells:
                     color = "red"
+                elif w in wells_high and w in wells_with_dash:
+                    color = "purple"  # пересечение: Distance > 1000 и "-"
+                elif w in wells_with_dash:
+                    color = "orange"
                 elif w in wells_high:
                     color = "yellow"
                 elif w in wells_current:
@@ -259,6 +282,7 @@ def neurotoxicity_app():
                 text=wells_all,
                 textposition='middle center',
                 marker=dict(size=35, color=well_colors, line=dict(color='black', width=1)),
+                textfont=dict(color='black'),
                 hoverinfo='text'
             ))
 
@@ -272,95 +296,122 @@ def neurotoxicity_app():
             )
 
             with st.expander("🧪 Планшет и удаление лунок", expanded=True):
-                col_left, col_right = st.columns([2.5, 1])
+                 st.caption("🟢 валидная, 🟡 > 1000, 🟠 содержит '-', 🟣 и > 1000, и '-', 🔴 удалена, ⚪ нет данных")
 
-                # --- Левая колонка: планшет ---
-                with col_left:
-                    st.plotly_chart(
-                        fig,
-                        use_container_width=False,
-                        config={
-                            "displayModeBar": False,
-                            "scrollZoom": False,
-                            "staticPlot": True
-                        }
-                    )
-                    st.caption("🟢 валидная, 🟡 > 1000, 🔴 удалена, ⚪ нет данных")
+                 col_left, = st.columns(1)
+                 with col_left:
+                     st.plotly_chart(
+                         fig,
+                         use_container_width=False,
+                         config={
+                             "displayModeBar": False,
+                             "scrollZoom": False,
+                             "staticPlot": True
+                         }
+                     )
 
-                # --- Правая колонка: управление лунками ---
-                with col_right:
-                    st.markdown("#### ❌ Удаление лунок")
-                    if wells_high:
-                        well_to_remove = st.selectbox("Лунка с Distance > 1000:", wells_high, key=f"select_remove_{selected_key}")
-                        rows_to_remove = df[df[well_col].astype(str) == well_to_remove]
-                        count_rows = rows_to_remove.shape[0]
-                        st.markdown(f"Будет удалено **{count_rows} строк**")
+                 # Теперь три колонки: жёлтые, оранжевые, восстановление
+                 col_yellow, col_orange, col_red = st.columns(3)
 
-                        if st.button("Удалить выбранную лунку"):
-                            df_new = df[df[well_col].astype(str) != well_to_remove].reset_index(drop=True)
-                            st.session_state[f"{selected_key}_data"] = df_new
-                            st.session_state[f"ver_{selected_key}"] += 1
-                            st.success(f"Удалено {count_rows} строк, связанных с лункой {well_to_remove}")
-                            st.rerun()
+                 # === ЖЁЛТЫЕ (Distance > 1000) ===
+                 with col_yellow:
+                     st.markdown("#### 🟡 Удаление лунок > 1000")
+                     if wells_high:
+                         well_to_remove = st.selectbox(
+                             "Лунка:",
+                             sorted(wells_high, key=well_sort_key),
+                             key=f"select_remove_{selected_key}"
+                         )
+                         rows_to_remove = df[df[well_col].astype(str) == well_to_remove]
+                         count_rows = rows_to_remove.shape[0]
+                         st.markdown(f"Будет удалено **{count_rows} строк**")
 
-                        # Показ данных по лунке с подсветкой
-                        with st.container():
-                            dist_col = next((col for col in rows_to_remove.columns if isinstance(col, str) and "Distance moved" in col), None)
+                         if st.button("Удалить", key=f"remove_btn_{selected_key}"):
+                             df_new = df[df[well_col].astype(str) != well_to_remove].reset_index(drop=True)
+                             st.session_state[f"{selected_key}_data"] = df_new
+                             st.session_state[f"ver_{selected_key}"] += 1
+                             st.success(f"Удалено {count_rows} строк, связанных с {well_to_remove}")
+                             st.rerun()
 
-                            if dist_col:
-                                def highlight_dist(val):
-                                    if isinstance(val, (int, float)) and val > 1000:
-                                        return "background-color: #ffa8a8"
-                                    return ""
+                         with st.container():
+                             def highlight_dist(val):
+                                 if isinstance(val, (int, float)) and val > 1000:
+                                     return "background-color: #f0ff47"
+                                 return ""
+                             styled = rows_to_remove.style.applymap(highlight_dist, subset=[dist_col])
+                             st.dataframe(styled, use_container_width=True)
+                     else:
+                         st.info("Нет жёлтых лунок")
 
-                                styled = rows_to_remove.style.applymap(highlight_dist, subset=[dist_col])
-                                st.dataframe(styled, use_container_width=True)
-                            else:
-                                st.dataframe(rows_to_remove, use_container_width=True)
-                    else:
-                        st.info("Нет лунок с Distance > 1000 для удаления.")
+                 # === ОРАНЖЕВЫЕ (с '-') ===
+                 with col_orange:
+                     st.markdown("#### 🟠 Обработка лунок с '-'")
+                     if wells_with_dash:
+                         well_dash = st.selectbox(
+                             "Лунка:",
+                             sorted(wells_with_dash, key=well_sort_key),
+                             key=f"dash_select_{selected_key}"
+                         )
+                         cols_action = st.columns([2, 1])
+                         with cols_action[0]:
+                              action = st.radio("Действие:", ["Удалить лунку", "Заменить '-' на NaN"], key=f"dash_action_{selected_key}")
+                         with cols_action[1]:
+                              if st.button("Применить", key=f"dash_apply_{selected_key}"):
+                                  if action == "Удалить лунку":
+                                      df = df[df[well_col].astype(str) != well_dash].reset_index(drop=True)
+                                  else:
+                                      mask = df[well_col].astype(str) == well_dash
+                                      df.loc[mask] = df.loc[mask].replace("-", np.nan)
+                                  st.session_state[f"{selected_key}_data"] = df
+                                  st.session_state[f"ver_{selected_key}"] += 1
+                                  st.rerun()
 
-                    # === ВОССТАНОВЛЕНИЕ ЛУНОК ===
-                    if removed_wells:
-                        st.markdown("#### ♻️ Восстановление лунки")
+                         rows_with_dash = df[df[well_col].astype(str) == well_dash].copy()
 
-                        def well_sort_key(well: str):
-                            row = well[0]
-                            col = int(well[1:])
-                            return (row, col)
+                         def highlight_dash(val):
+                             if isinstance(val, str) and val.strip() == "-":
+                                 return "background-color: #ffd699"
+                             return ""
 
-                        well_to_restore = st.selectbox(
-                            "Выберите лунку для восстановления:",
-                            sorted(removed_wells, key=well_sort_key),
-                            key=f"restore_select_{selected_key}"
-                        )
+                         styled = rows_with_dash.style.applymap(highlight_dash)
+                         st.dataframe(styled, use_container_width=True)
+                     else:
+                         st.info("Нет лунок с '-'")
 
-                        rows_to_restore = raw_df[raw_df[well_col].astype(str) == well_to_restore]
-                        count_restore = rows_to_restore.shape[0]
-                        st.markdown(f"Будет восстановлено **{count_restore} строк**")
+                 # === ВОССТАНОВЛЕНИЕ (красные) ===
+                 with col_red:
+                     st.markdown("#### 🔴 Восстановление лунок")
+                     if removed_wells:
+                         well_to_restore = st.selectbox(
+                             "Лунка:",
+                             sorted(removed_wells, key=well_sort_key),
+                             key=f"restore_select_{selected_key}"
+                         )
+                         rows_to_restore = raw_df[raw_df[well_col].astype(str) == well_to_restore]
+                         count_restore = rows_to_restore.shape[0]
+                         st.markdown(f"Будет восстановлено **{count_restore} строк**")
 
-                        if st.button("Восстановить выбранную лунку"):
-                            current_df = st.session_state[f"{selected_key}_data"]
+                         if st.button("Восстановить", key=f"restore_btn_{selected_key}"):
+                             current_df = st.session_state[f"{selected_key}_data"]
+                             restored_df = pd.concat([current_df, rows_to_restore], ignore_index=True)
+                             current_wells = restored_df[well_col].astype(str).tolist()
+                             full_df = raw_df[raw_df[well_col].astype(str).isin(current_wells)].copy().reset_index(drop=True)
 
-                            # Исключаем дубликаты на всякий случай (если вдруг уже есть такие строки)
-                            # Добавляем строки в том порядке, как в raw_df (без сортировок)
-                            restored_df = pd.concat([current_df, rows_to_restore], ignore_index=True)
-
-                            # Восстанавливаем оригинальный порядок из raw_df:
-                            # просто фильтруем raw_df на все текущие лунки в restored_df
-                            current_wells = restored_df[well_col].astype(str).tolist()
-                            full_df = raw_df[raw_df[well_col].astype(str).isin(current_wells)].copy().reset_index(drop=True)
-
-                            st.session_state[f"{selected_key}_data"] = full_df
-                            st.session_state[f"ver_{selected_key}"] += 1
-                            st.success(f"Восстановлено {count_restore} строк по лунке {well_to_restore}")
-                            st.rerun()
-                    else:
-                        st.info("Нет удалённых лунок для восстановления.")
+                             st.session_state[f"{selected_key}_data"] = full_df
+                             st.session_state[f"ver_{selected_key}"] += 1
+                             st.success(f"Восстановлено {count_restore} строк по {well_to_restore}")
+                             st.rerun()
+                     else:
+                         st.info("Нет удалённых лунок")
 
             # Полная таблица
             with st.expander("📋 Показать таблицу данных по всем лункам"):
                 st.dataframe(df, use_container_width=True)
+
+        # === САЙДБАР: динамический отчёт ===
+        report = compute_deletion_report(file_keys)
+        render_sidebar_report(report)
+
     # ================
     # 📊 Вкладка агрегации
     # ================
@@ -396,154 +447,159 @@ def neurotoxicity_app():
                 st.stop()
 
             # Приводим к нужным типам
-            df[col_velocity] = pd.to_numeric(df[col_velocity], errors="coerce")
-            df[col_time] = df[col_time].astype(str)
-            df[col_conc] = df[col_conc].astype(str)
+            try:
+               df[col_velocity] = pd.to_numeric(df[col_velocity])#, errors="coerce")
+ 
+               df[col_time] = df[col_time].astype(str)
+               df[col_conc] = df[col_conc].astype(str)
 
-            # Заменяем NaN в Concentration для контроля на "0"
-            df[col_conc] = df.apply(lambda row: "0" if row[col_group].strip().lower() == "control" else row[col_conc], axis=1)
+               # Заменяем NaN в Concentration для контроля на "0"
+               df[col_conc] = df.apply(lambda row: "0" if row[col_group].strip().lower() == "control" else row[col_conc], axis=1)
 
-            # Время → число минуты: Time = 00:00:00 → 2, 00:02:00 → 4, ...
-            # Порядок должен сохраняться как в исходном файле
-            time_order = df[col_time].dropna().unique().tolist()
-            time_mapping = {t: str((i + 1) * 2) for i, t in enumerate(time_order)}
-            df["TimeNumeric"] = df[col_time].map(time_mapping)
+               # Время → число минуты: Time = 00:00:00 → 2, 00:02:00 → 4, ...
+               # Порядок должен сохраняться как в исходном файле
+               time_order = df[col_time].dropna().unique().tolist()
+               time_mapping = {t: str((i + 1) * 2) for i, t in enumerate(time_order)}
+               df["TimeNumeric"] = df[col_time].map(time_mapping)
 
-            # Группировка
-            group_cols = ["TimeNumeric", col_group, col_conc]
+               # Группировка
+               group_cols = ["TimeNumeric", col_group, col_conc]
 
-            agg_df = (
-                df.groupby(group_cols, sort=False)[col_velocity]
-                .agg(['mean', 'std'])
-                .reset_index()
-                .rename(columns={
-                    'mean': 'Velocity Mean',
-                    'std': 'Velocity SD'
-                })
-            )
+               agg_df = (
+                   df.groupby(group_cols, sort=False)[col_velocity]
+                   .agg(['mean', 'std'])
+                   .reset_index()
+                   .rename(columns={
+                       'mean': 'Velocity Mean',
+                       'std': 'Velocity SD'
+                   })
+               )
 
-            st.dataframe(agg_df, use_container_width=True)
+               st.dataframe(agg_df, use_container_width=True)
 
-            # Скачивание
-            towrite = io.BytesIO()
-            with pd.ExcelWriter(towrite, engine="openpyxl") as writer:
-                agg_df.to_excel(writer, index=False, sheet_name="Aggregated")
-            towrite.seek(0)
-            st.download_button(
-                label="⬇️ Скачать агрегированные данные",
-                data=towrite,
-                file_name=f"{key_selected}_velocity_aggregated.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+               # Скачивание
+               towrite = io.BytesIO()
+               with pd.ExcelWriter(towrite, engine="openpyxl") as writer:
+                   agg_df.to_excel(writer, index=False, sheet_name="Aggregated")
+               towrite.seek(0)
+               st.download_button(
+                   label="⬇️ Скачать агрегированные данные",
+                   data=towrite,
+                   file_name=f"{key_selected}_velocity_aggregated.xlsx",
+                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+               )
 
-            # === График ===
-            st.markdown("### 📈 График: Velocity vs Time")
+               # === График ===
+               st.markdown("### 📈 График: Velocity vs Time")
+               
+               agg_df["Time"] = pd.to_numeric(agg_df["TimeNumeric"])#, errors="coerce")
+               agg_df["Concentration"] = pd.to_numeric(agg_df["Concentration"])#, errors="coerce")
 
-            agg_df["Time"] = pd.to_numeric(agg_df["TimeNumeric"], errors="coerce")
-            agg_df["Concentration"] = pd.to_numeric(agg_df["Concentration"], errors="coerce")
+               all_concentrations = agg_df["Concentration"].dropna().unique().tolist()
+               all_concentrations.sort()
 
-            all_concentrations = agg_df["Concentration"].dropna().unique().tolist()
-            all_concentrations.sort()
+               selected_concs = st.multiselect(
+                   "Выберите концентрации для отображения (0 = контроль):",
+                   options=all_concentrations,
+                   default=all_concentrations
+               )
 
-            selected_concs = st.multiselect(
-                "Выберите концентрации для отображения (0 = контроль):",
-                options=all_concentrations,
-                default=all_concentrations
-            )
+               # === Настройки ===
+               with st.expander("⚙️ Настройки графика", expanded=False):
+                   title = st.text_input("Заголовок графика", value=st.session_state.get("neurotoxicity_title", "Velocity vs Time"), key="key_neurotoxicity_title")
+                   st.session_state["neurotoxicity_title"] = title
+                   xlabel = st.text_input("Подпись оси X", value=st.session_state.get("neurotoxicity_xlabel", "Time (min)"), key="key_neurotoxicity_xlabel")
+                   st.session_state["neurotoxicity_xlabel"] = xlabel
+                   ylabel = st.text_input("Подпись оси Y", value=st.session_state.get("neurotoxicity_ylabel", "Velocity (mm/s)"), key="key_neurotoxicity_ylabel")
+                   st.session_state["neurotoxicity_ylabel"] = ylabel
+                   legend_title = st.text_input("Заголовок легенды", value=st.session_state.get("neurotoxicity_legend_title", "Concentration"), key="key_neurotoxicity_legend_title")
+                   st.session_state["neurotoxicity_legend_title"] = legend_title
 
-            # === Настройки ===
-            with st.expander("⚙️ Настройки графика", expanded=False):
-                title = st.text_input("Заголовок графика", value=st.session_state.get("neurotoxicity_title", "Velocity vs Time"), key="key_neurotoxicity_title")
-                st.session_state["neurotoxicity_title"] = title
-                xlabel = st.text_input("Подпись оси X", value=st.session_state.get("neurotoxicity_xlabel", "Time (min)"), key="key_neurotoxicity_xlabel")
-                st.session_state["neurotoxicity_xlabel"] = xlabel
-                ylabel = st.text_input("Подпись оси Y", value=st.session_state.get("neurotoxicity_ylabel", "Velocity (mm/s)"), key="key_neurotoxicity_ylabel")
-                st.session_state["neurotoxicity_ylabel"] = ylabel
-                legend_title = st.text_input("Заголовок легенды", value=st.session_state.get("neurotoxicity_legend_title", "Concentration"), key="key_neurotoxicity_legend_title")
-                st.session_state["neurotoxicity_legend_title"] = legend_title
+                   dark_label = st.text_input("Текст для тёмных сегментов", value=st.session_state.get("neurotoxicity_dark_label", "Dark"), key="key_neurotoxicity_dark_label")
+                   st.session_state["neurotoxicity_dark_label"] = dark_label
 
-                dark_label = st.text_input("Текст для тёмных сегментов", value=st.session_state.get("neurotoxicity_dark_label", "Dark"), key="key_neurotoxicity_dark_label")
-                st.session_state["neurotoxicity_dark_label"] = dark_label
+                   light_label = st.text_input("Текст для светлых сегментов", value=st.session_state.get("neurotoxicity_light_label", "Light"), key="key_neurotoxicity_light_label")
+                   st.session_state["neurotoxicity_light_label"] = light_label
 
-                light_label = st.text_input("Текст для светлых сегментов", value=st.session_state.get("neurotoxicity_light_label", "Light"), key="key_neurotoxicity_light_label")
-                st.session_state["neurotoxicity_light_label"] = light_label
+                   legend_labels = {}
+                   st.markdown("Подписи для легенды:")
+                   for conc in selected_concs:
+                       default_label = "Control" if float(conc) == 0 else f"{conc} µM"
+                       legend_labels[conc] = st.text_input(
+                           f"Концентрация {conc}",
+                           value=st.session_state.get(f"neurotoxicity_legend_{conc}", default_label),
+                           key=f"key_neurotoxicity_legend_{conc}"
+                       )
+                       st.session_state[f"neurotoxicity_legend_{conc}"] = legend_labels[conc]
 
-                legend_labels = {}
-                st.markdown("Подписи для легенды:")
-                for conc in selected_concs:
-                    default_label = "Control" if float(conc) == 0 else f"{conc} µM"
-                    legend_labels[conc] = st.text_input(
-                        f"Концентрация {conc}",
-                        value=st.session_state.get(f"neurotoxicity_legend_{conc}", default_label),
-                        key=f"key_neurotoxicity_legend_{conc}"
-                    )
-                    st.session_state[f"neurotoxicity_legend_{conc}"] = legend_labels[conc]
+                   show_plot = st.checkbox("Показывать график", value=True)
 
-                show_plot = st.checkbox("Показывать график", value=True)
+               if show_plot:
 
-            if show_plot:
+                   filtered_df = agg_df[agg_df["Concentration"].isin(selected_concs)]
 
-                filtered_df = agg_df[agg_df["Concentration"].isin(selected_concs)]
+                   fig, ax = plt.subplots(figsize=(10, 6))
 
-                fig, ax = plt.subplots(figsize=(10, 6))
+                   # Палитра цветов
+                   cmap = get_cmap("Set2")
+                   color_list = cmap.colors
+                   color_cycle = color_list * (len(selected_concs) // len(color_list) + 1)
 
-                # Палитра цветов
-                cmap = get_cmap("Set2")
-                color_list = cmap.colors
-                color_cycle = color_list * (len(selected_concs) // len(color_list) + 1)
+                   for i, conc in enumerate(selected_concs):
+                       df_line = filtered_df[filtered_df["Concentration"] == conc]
+                       label = legend_labels.get(conc, str(conc))
+                       ax.errorbar(
+                           df_line["Time"],
+                           df_line["Velocity Mean"],
+                           yerr=df_line["Velocity SD"],
+                           label=label,
+                           marker='o',
+                           capsize=3,
+                           linewidth=1.5,
+                           alpha=0.6,
+                           color=color_cycle[i]
+                       )
 
-                for i, conc in enumerate(selected_concs):
-                    df_line = filtered_df[filtered_df["Concentration"] == conc]
-                    label = legend_labels.get(conc, str(conc))
-                    ax.errorbar(
-                        df_line["Time"],
-                        df_line["Velocity Mean"],
-                        yerr=df_line["Velocity SD"],
-                        label=label,
-                        marker='o',
-                        capsize=3,
-                        linewidth=1.5,
-                        alpha=0.6,
-                        color=color_cycle[i]
-                    )
+                   ax.set_xlabel(xlabel, fontsize=12, labelpad=18)  # увеличенный отступ
+                   ax.set_ylabel(ylabel, fontsize=12)
+                   ax.set_title(title, fontsize=14)
+                   ax.legend(title=legend_title, fontsize=10, title_fontsize=11, loc='best')
+                   ax.get_legend().get_title().set_ha('left')  
+                   ax.grid(False)
+                   ax.set_xlim([0, 52])
+                   ax.set_xticks([0, 10, 20, 30, 40, 50])
 
-                ax.set_xlabel(xlabel, fontsize=12, labelpad=18)  # увеличенный отступ
-                ax.set_ylabel(ylabel, fontsize=12)
-                ax.set_title(title, fontsize=14)
-                ax.legend(title=legend_title, fontsize=10, title_fontsize=11, loc='best')
-                ax.get_legend().get_title().set_ha('left')  
-                ax.grid(False)
-                ax.set_xlim([0, 52])
-                ax.set_xticks([0, 10, 20, 30, 40, 50])
+                   # Расчёт нижнего Y для подписей
+                   y_min, y_max = ax.get_ylim()
+                   text_y = y_min - 0.04 * (y_max - y_min)
 
-                # Расчёт нижнего Y для подписей
-                y_min, y_max = ax.get_ylim()
-                text_y = y_min - 0.04 * (y_max - y_min)
+                   for i, label in enumerate([dark_label, light_label] * 3):
+                       x_pos = i * 10 + 5
+                       if x_pos > 50:
+                           break
+                       ax.text(
+                           x_pos, text_y,
+                           label,
+                           ha='center',
+                           va='top',
+                           fontsize=10
+                       )
 
-                for i, label in enumerate([dark_label, light_label] * 3):
-                    x_pos = i * 10 + 5
-                    if x_pos > 50:
-                        break
-                    ax.text(
-                        x_pos, text_y,
-                        label,
-                        ha='center',
-                        va='top',
-                        fontsize=10
-                    )
+                   st.pyplot(fig)
 
-                st.pyplot(fig)
+                   # Скачивание
+                   buf = io.BytesIO()
+                   fig.savefig(buf, format="png", dpi=600, bbox_inches="tight")
+                   st.download_button(
+                       label="⬇️ Скачать график PNG (600 dpi)",
+                       data=buf.getvalue(),
+                       file_name=f"{key_selected}_velocity_plot.png",
+                       mime="image/png"
+                   )
 
-                # Скачивание
-                buf = io.BytesIO()
-                fig.savefig(buf, format="png", dpi=600, bbox_inches="tight")
-                st.download_button(
-                    label="⬇️ Скачать график PNG (600 dpi)",
-                    data=buf.getvalue(),
-                    file_name=f"{key_selected}_velocity_plot.png",
-                    mime="image/png"
-                )
-    
+            except ValueError as e:
+               st.error(f"❌ В столбце `{col_velocity}` есть необработанные значения ('-'). Перейдите во вкладку «⚙️ Анализ данных» и обработайте их.")
+
     # ================
     # 📐 Вкладка расчётов
     # ================
@@ -568,120 +624,115 @@ def neurotoxicity_app():
 
             col_dist = dist_cols[0]
             col_velocity = velocity_cols[0]
+            
+            try:
+              df[col_dist] = pd.to_numeric(df[col_dist])#, errors="coerce")
+              df[col_velocity] = pd.to_numeric(df[col_velocity])#, errors="coerce")
 
-            df[col_dist] = pd.to_numeric(df[col_dist], errors="coerce")
-            df[col_velocity] = pd.to_numeric(df[col_velocity], errors="coerce")
+              time_order = df[col_time].dropna().unique().tolist()
+              time_mapping = {t: str((i + 1) * 2) for i, t in enumerate(time_order)}
+              df["TimeNumeric"] = df[col_time].map(time_mapping).astype(float)
 
-            time_order = df[col_time].dropna().unique().tolist()
-            time_mapping = {t: str((i + 1) * 2) for i, t in enumerate(time_order)}
-            df["TimeNumeric"] = df[col_time].map(time_mapping).astype(float)
+              original_well_order = df[col_well].dropna().astype(str).drop_duplicates().tolist()
 
-            original_well_order = df[col_well].dropna().astype(str).drop_duplicates().tolist()
+              def get_segment(tn: float) -> str:
+                  try:
+                      tn = int(tn)
+                      if 2 <= tn <= 10:
+                          return "1"
+                      elif 12 <= tn <= 20:
+                          return "2"
+                      elif 22 <= tn <= 30:
+                          return "3"
+                      elif 32 <= tn <= 40:
+                          return "4"
+                      elif 42 <= tn <= 50:
+                          return "5"
+                      else:
+                          return "Other"
+                  except:
+                      return "Invalid"
 
-            def get_segment(tn: float) -> str:
-                try:
-                    tn = int(tn)
-                    if 2 <= tn <= 10:
-                        return "1"
-                    elif 12 <= tn <= 20:
-                        return "2"
-                    elif 22 <= tn <= 30:
-                        return "3"
-                    elif 32 <= tn <= 40:
-                        return "4"
-                    elif 42 <= tn <= 50:
-                        return "5"
-                    else:
-                        return "Other"
-                except:
-                    return "Invalid"
+              df["Segment"] = df["TimeNumeric"].apply(get_segment)
 
-            df["Segment"] = df["TimeNumeric"].apply(get_segment)
+              # === DISTANCE ===
+              total_df = df.groupby(col_well, sort=False)[col_dist].sum().reset_index()
+              total_df = total_df.rename(columns={col_dist: "Distance Total"})
 
-            # === DISTANCE ===
-            total_df = df.groupby(col_well, sort=False)[col_dist].sum().reset_index()
-            total_df = total_df.rename(columns={col_dist: "Distance Total"})
+              seg_df = df.groupby([col_well, "Segment"], sort=False)[col_dist].sum().reset_index()
+              seg_pivot = seg_df.pivot(index=col_well, columns="Segment", values=col_dist).reset_index()
+              seg_pivot.columns.name = None
+              seg_pivot = seg_pivot.rename(columns={seg: f"D_{seg}" for seg in seg_pivot.columns if seg not in [col_well]})
+              result_dist = pd.merge(total_df, seg_pivot, on=col_well, how="left").fillna(0)
 
-            seg_df = df.groupby([col_well, "Segment"], sort=False)[col_dist].sum().reset_index()
-            seg_pivot = seg_df.pivot(index=col_well, columns="Segment", values=col_dist).reset_index()
-            seg_pivot.columns.name = None
-            seg_pivot = seg_pivot.rename(columns={seg: f"D_{seg}" for seg in seg_pivot.columns if seg not in [col_well]})
-            result_dist = pd.merge(total_df, seg_pivot, on=col_well, how="left").fillna(0)
+              # === VELOCITY MEAN ===
+              vel_mean_df = (
+                  df.groupby([col_well, "Segment"], sort=False)[col_velocity]
+                  .mean().reset_index()
+                  .pivot(index=col_well, columns="Segment", values=col_velocity)
+                  .reset_index()
+                  .fillna(0)
+              )
+              vel_mean_df.columns.name = None
+              vel_mean_df = vel_mean_df.rename(columns=lambda x: f"V_mean_{x}" if x != col_well else x)
 
-            # === VELOCITY MEAN ===
-            vel_mean_df = (
-                df.groupby([col_well, "Segment"], sort=False)[col_velocity]
-                .mean().reset_index()
-                .pivot(index=col_well, columns="Segment", values=col_velocity)
-                .reset_index()
-                .fillna(0)
-            )
-            vel_mean_df.columns.name = None
-            vel_mean_df = vel_mean_df.rename(columns=lambda x: f"V_mean_{x}" if x != col_well else x)
+              # === VELOCITY VARIANCE ===
+              vel_var_df = (
+                  df.groupby([col_well, "Segment"], sort=False)[col_velocity]
+                  .var(ddof=1).reset_index()
+                  .pivot(index=col_well, columns="Segment", values=col_velocity)
+                  .reset_index()
+                  .fillna(0)
+              )
+              vel_var_df.columns.name = None
+              vel_var_df = vel_var_df.rename(columns=lambda x: f"V_var_{x}" if x != col_well else x)
 
-            # === VELOCITY VARIANCE ===
-            vel_var_df = (
-                df.groupby([col_well, "Segment"], sort=False)[col_velocity]
-                .var(ddof=1).reset_index()
-                .pivot(index=col_well, columns="Segment", values=col_velocity)
-                .reset_index()
-                .fillna(0)
-            )
-            vel_var_df.columns.name = None
-            vel_var_df = vel_var_df.rename(columns=lambda x: f"V_var_{x}" if x != col_well else x)
+              # === ОБЪЕДИНЕНИЕ ВСЕХ ===
+              merged_df = result_dist.merge(vel_mean_df, on=col_well, how="left")
+              merged_df = merged_df.merge(vel_var_df, on=col_well, how="left")
 
-            # === ОБЪЕДИНЕНИЕ ВСЕХ ===
-            merged_df = result_dist.merge(vel_mean_df, on=col_well, how="left")
-            merged_df = merged_df.merge(vel_var_df, on=col_well, how="left")
+              # === ДОБАВИМ ОТНОШЕНИЯ V_mean ===
+              def compute_ratio(df, num, denom):
+                  col_n = f"V_mean_{num}"
+                  col_d = f"V_mean_{denom}"
+                  new_col = f"V_ratio_{num}_{denom}"
+                  if col_n in df.columns and col_d in df.columns:
+                      df[new_col] = df[col_n] / df[col_d].replace(0, np.nan)
+                  return df
 
-            # === ДОБАВИМ ОТНОШЕНИЯ V_mean ===
-            def compute_ratio(df, num, denom):
-                col_n = f"V_mean_{num}"
-                col_d = f"V_mean_{denom}"
-                new_col = f"V_ratio_{num}_{denom}"
-                if col_n in df.columns and col_d in df.columns:
-                    df[new_col] = df[col_n] / df[col_d].replace(0, np.nan)
-                return df
+              for a, b in [("1", "2"), ("3", "2"), ("3", "4"), ("5", "4")]:
+                  merged_df = compute_ratio(merged_df, a, b)
 
-            for a, b in [("1", "2"), ("3", "2"), ("3", "4"), ("5", "4")]:
-                merged_df = compute_ratio(merged_df, a, b)
+              # === ПОРЯДОК КОЛОНОК ===
+              base_cols = [col_well, "Distance Total"]
+              dist_seg_cols = [f"D_{i}" for i in ["1", "2", "3", "4", "5"]]
+              vel_cols = []
+              for seg in ["1", "2", "3", "4", "5"]:
+                  m = f"V_mean_{seg}"
+                  v = f"V_var_{seg}"
+                  if m in merged_df.columns and v in merged_df.columns:
+                      vel_cols += [m, v]
+              ratio_cols = [col for col in merged_df.columns if col.startswith("V_ratio_")]
+              final_cols = base_cols + dist_seg_cols + vel_cols + ratio_cols
+              merged_df = merged_df[[c for c in final_cols if c in merged_df.columns]]
 
-            # === ПОРЯДОК КОЛОНОК ===
-            base_cols = [col_well, "Distance Total"]
-            dist_seg_cols = [f"D_{i}" for i in ["1", "2", "3", "4", "5"]]
-            vel_cols = []
-            for seg in ["1", "2", "3", "4", "5"]:
-                m = f"V_mean_{seg}"
-                v = f"V_var_{seg}"
-                if m in merged_df.columns and v in merged_df.columns:
-                    vel_cols += [m, v]
-            ratio_cols = [col for col in merged_df.columns if col.startswith("V_ratio_")]
-            final_cols = base_cols + dist_seg_cols + vel_cols + ratio_cols
-            merged_df = merged_df[[c for c in final_cols if c in merged_df.columns]]
+              # Порядок лунок
+              merged_df[col_well] = pd.Categorical(merged_df[col_well], categories=original_well_order, ordered=True)
+              merged_df = merged_df.sort_values(col_well).reset_index(drop=True)
 
-            # Порядок лунок
-            merged_df[col_well] = pd.Categorical(merged_df[col_well], categories=original_well_order, ordered=True)
-            merged_df = merged_df.sort_values(col_well).reset_index(drop=True)
+              st.dataframe(merged_df, use_container_width=True)
 
-            st.dataframe(merged_df, use_container_width=True)
-
-            # Скачивание
-            towrite = io.BytesIO()
-            with pd.ExcelWriter(towrite, engine="openpyxl") as writer:
-                merged_df.to_excel(writer, index=False, sheet_name="Distance_Velocity_Summary")
-            towrite.seek(0)
-            st.download_button(
-                label="⬇️ Скачать таблицу расчётов",
-                data=towrite,
-                file_name=f"{key_selected_calc}_summary.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_summary_calc"
-            )
-
-    # === САЙДБАР: динамический отчёт ===
-    report = compute_deletion_report(file_keys)
-    render_sidebar_report(report)
-
-
-if __name__ == "__main__":
-    neurotoxicity_app()
+              # Скачивание
+              towrite = io.BytesIO()
+              with pd.ExcelWriter(towrite, engine="openpyxl") as writer:
+                  merged_df.to_excel(writer, index=False, sheet_name="Distance_Velocity_Summary")
+              towrite.seek(0)
+              st.download_button(
+                  label="⬇️ Скачать таблицу расчётов",
+                  data=towrite,
+                  file_name=f"{key_selected_calc}_summary.xlsx",
+                  mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                  key="dl_summary_calc"
+              )
+            except ValueError as e:
+               st.error(f"❌ В данных есть необработанные значения ('-'). Перейдите во вкладку «⚙️ Анализ данных» и обработайте их.")
