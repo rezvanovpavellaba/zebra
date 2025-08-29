@@ -133,7 +133,12 @@ def render_sidebar_report(report: dict):
 
             if r.get("removed_wells_detail"):
                 st.markdown("**Удалённые лунки:**")
-                for w, cnt in r["removed_wells_detail"].items():
+                def well_sort_key(well: str):
+                    row = well[0]
+                    col = int(well[1:])
+                    return (row, col)
+
+                for w, cnt in sorted(r["removed_wells_detail"].items(), key=lambda x: well_sort_key(x[0])):
                     st.write(f"- {w}: {cnt} строк")
 
 
@@ -227,11 +232,7 @@ def neurotoxicity_app():
                 st.warning(f"Файл {selected_key}: не найдена колонка 'Distance moved'.")
                 st.stop()
             dist_col = dist_cols[0]
-            
-            #исходный фрейм (дальше используется, но без тихой замены - на Nan)
-            #df[dist_col] = pd.to_numeric(df[dist_col])
 
-            # НЕ меняем df[dist_col] напрямую
             dist_numeric = pd.to_numeric(df[dist_col], errors="coerce")
 
             wells_all = [f"{r}{c}" for r in "ABCDEFGH" for c in range(1, 13)]
@@ -240,28 +241,22 @@ def neurotoxicity_app():
             wells_high = df[dist_numeric > 1000][well_col].astype(str).dropna().unique().tolist()
             removed_wells = list(set(wells_present) - set(wells_current))
 
-
             def well_sort_key(well: str):
                 row = well[0]
                 col = int(well[1:])
                 return (row, col)
 
-            # === Новое: определение лунок с "-" ===
-            # Находим индекс первой поведенческой колонки
             distance_start_idx = df.columns.get_loc(next(col for col in df.columns if isinstance(col, str) and "Distance moved" in col))
             data_cols = df.columns[distance_start_idx:]
-
-            # Проверка на "-"
             dash_mask = df[data_cols].astype(str).applymap(lambda x: x.strip() == "-")
             wells_with_dash = df.loc[dash_mask.any(axis=1), well_col].astype(str).unique().tolist()
 
-            # Цвета
             well_colors = []
             for w in wells_all:
                 if w in removed_wells:
                     color = "red"
                 elif w in wells_high and w in wells_with_dash:
-                    color = "purple"  # пересечение: Distance > 1000 и "-"
+                    color = "purple"
                 elif w in wells_with_dash:
                     color = "orange"
                 elif w in wells_high:
@@ -296,115 +291,132 @@ def neurotoxicity_app():
             )
 
             with st.expander("🧪 Планшет и удаление лунок", expanded=True):
-                 st.caption("🟢 валидная, 🟡 > 1000, 🟠 содержит '-', 🟣 и > 1000, и '-', 🔴 удалена, ⚪ нет данных")
+                st.caption("🟢 валидная, 🟡 > 1000, 🟠 содержит '-', 🟣 и > 1000, и '-', 🔴 удалена, ⚪ нет данных")
 
-                 col_left, = st.columns(1)
-                 with col_left:
-                     st.plotly_chart(
-                         fig,
-                         use_container_width=False,
-                         config={
-                             "displayModeBar": False,
-                             "scrollZoom": False,
-                             "staticPlot": True
-                         }
-                     )
+                st.plotly_chart(fig, use_container_width=False, config={"displayModeBar": False, "scrollZoom": False, "staticPlot": True})
 
-                 # Теперь три колонки: жёлтые, оранжевые, восстановление
-                 col_yellow, col_orange, col_red = st.columns(3)
+                col_yellow, col_orange, col_red = st.columns(3)
 
-                 # === ЖЁЛТЫЕ (Distance > 1000) ===
-                 with col_yellow:
-                     st.markdown("#### 🟡 Удаление лунок > 1000")
-                     if wells_high:
-                         well_to_remove = st.selectbox(
-                             "Лунка:",
-                             sorted(wells_high, key=well_sort_key),
-                             key=f"select_remove_{selected_key}"
-                         )
-                         rows_to_remove = df[df[well_col].astype(str) == well_to_remove]
-                         count_rows = rows_to_remove.shape[0]
-                         st.markdown(f"Будет удалено **{count_rows} строк**")
+                # === ЖЁЛТЫЕ ===
+                with col_yellow:
+                    st.markdown("#### 🟡 Удаление лунок > 1000")
+                    if wells_high:
+                        well_to_remove = st.selectbox("Одиночный выбор:", sorted(wells_high, key=well_sort_key), key=f"select_remove_{selected_key}")
+                        if st.button("Удалить выбранную", key=f"remove_btn_{selected_key}"):
+                            df_new = df[df[well_col].astype(str) != well_to_remove].reset_index(drop=True)
+                            st.session_state[f"{selected_key}_data"] = df_new
+                            st.session_state[f"ver_{selected_key}"] += 1
+                            st.success(f"Удалена лунка {well_to_remove}")
+                            st.rerun()
 
-                         if st.button("Удалить", key=f"remove_btn_{selected_key}"):
-                             df_new = df[df[well_col].astype(str) != well_to_remove].reset_index(drop=True)
-                             st.session_state[f"{selected_key}_data"] = df_new
-                             st.session_state[f"ver_{selected_key}"] += 1
-                             st.success(f"Удалено {count_rows} строк, связанных с {well_to_remove}")
-                             st.rerun()
+                        rows_to_remove = df[df[well_col].astype(str) == well_to_remove]
+                        st.dataframe(rows_to_remove.style.applymap(
+                            lambda val: "background-color: #f0ff47" if isinstance(val, (int, float)) and val > 1000 else "",
+                            subset=[dist_col]
+                        ), use_container_width=True)
 
-                         with st.container():
-                             def highlight_dist(val):
-                                 if isinstance(val, (int, float)) and val > 1000:
-                                     return "background-color: #f0ff47"
-                                 return ""
-                             styled = rows_to_remove.style.applymap(highlight_dist, subset=[dist_col])
-                             st.dataframe(styled, use_container_width=True)
-                     else:
-                         st.info("Нет жёлтых лунок")
+                        multi_remove = st.multiselect("Множественный выбор:", sorted(wells_high, key=well_sort_key), key=f"multi_remove_{selected_key}")
+                        if multi_remove and st.button("✅ Удалить выбранные", key=f"multi_remove_btn_{selected_key}"):
+                            df_new = df[~df[well_col].astype(str).isin(multi_remove)].reset_index(drop=True)
+                            st.session_state[f"{selected_key}_data"] = df_new
+                            st.session_state[f"ver_{selected_key}"] += 1
+                            st.success(f"Удалено {len(multi_remove)} лунок")
+                            st.rerun()
 
-                 # === ОРАНЖЕВЫЕ (с '-') ===
-                 with col_orange:
-                     st.markdown("#### 🟠 Обработка лунок с '-'")
-                     if wells_with_dash:
-                         well_dash = st.selectbox(
-                             "Лунка:",
-                             sorted(wells_with_dash, key=well_sort_key),
-                             key=f"dash_select_{selected_key}"
-                         )
-                         cols_action = st.columns([2, 1])
-                         with cols_action[0]:
-                              action = st.radio("Действие:", ["Удалить лунку", "Заменить '-' на NaN"], key=f"dash_action_{selected_key}")
-                         with cols_action[1]:
-                              if st.button("Применить", key=f"dash_apply_{selected_key}"):
-                                  if action == "Удалить лунку":
-                                      df = df[df[well_col].astype(str) != well_dash].reset_index(drop=True)
-                                  else:
-                                      mask = df[well_col].astype(str) == well_dash
-                                      df.loc[mask] = df.loc[mask].replace("-", np.nan)
-                                  st.session_state[f"{selected_key}_data"] = df
-                                  st.session_state[f"ver_{selected_key}"] += 1
-                                  st.rerun()
+                        if st.button("❌ Удалить все жёлтые лунки", key=f"remove_all_high_{selected_key}"):
+                            df_new = df[~df[well_col].astype(str).isin(wells_high)].reset_index(drop=True)
+                            st.session_state[f"{selected_key}_data"] = df_new
+                            st.session_state[f"ver_{selected_key}"] += 1
+                            st.success(f"Удалены все жёлтые лунки: {len(wells_high)}")
+                            st.rerun()
+                    else:
+                        st.info("Нет жёлтых лунок")
 
-                         rows_with_dash = df[df[well_col].astype(str) == well_dash].copy()
+                # === ОРАНЖЕВЫЕ ===
+                with col_orange:
+                    st.markdown("#### 🟠 Обработка лунок с '-'")
+                    if wells_with_dash:
+                        well_dash = st.selectbox("Одиночный выбор:", sorted(wells_with_dash, key=well_sort_key), key=f"dash_select_{selected_key}")
+                        action = st.radio("Действие:", ["Удалить лунку", "Заменить '-' на NaN"], key=f"dash_action_{selected_key}")
+                        if st.button("Применить", key=f"dash_apply_{selected_key}"):
+                            if action == "Удалить лунку":
+                                df = df[df[well_col].astype(str) != well_dash].reset_index(drop=True)
+                            else:
+                                mask = df[well_col].astype(str) == well_dash
+                                df.loc[mask] = df.loc[mask].replace("-", np.nan)
+                            st.session_state[f"{selected_key}_data"] = df
+                            st.session_state[f"ver_{selected_key}"] += 1
+                            st.rerun()
 
-                         def highlight_dash(val):
-                             if isinstance(val, str) and val.strip() == "-":
-                                 return "background-color: #ffd699"
-                             return ""
+                        st.dataframe(df[df[well_col].astype(str) == well_dash].style.applymap(
+                            lambda val: "background-color: #ffd699" if isinstance(val, str) and val.strip() == "-" else ""
+                        ), use_container_width=True)
 
-                         styled = rows_with_dash.style.applymap(highlight_dash)
-                         st.dataframe(styled, use_container_width=True)
-                     else:
-                         st.info("Нет лунок с '-'")
+                        multi_dash = st.multiselect("Множественный выбор:", sorted(wells_with_dash, key=well_sort_key), key=f"dash_multi_select_{selected_key}")
+                        if multi_dash:
+                            multi_action = st.radio("Действие для выбранных:", ["Удалить", "Заменить '-' на NaN"], key=f"dash_multi_action_{selected_key}")
+                            if st.button("⚙️ Применить к выбранным", key=f"dash_multi_apply_{selected_key}"):
+                                if multi_action == "Удалить":
+                                    df = df[~df[well_col].astype(str).isin(multi_dash)].reset_index(drop=True)
+                                else:
+                                    mask = df[well_col].astype(str).isin(multi_dash)
+                                    df.loc[mask] = df.loc[mask].replace("-", np.nan)
+                                st.session_state[f"{selected_key}_data"] = df
+                                st.session_state[f"ver_{selected_key}"] += 1
+                                st.rerun()
 
-                 # === ВОССТАНОВЛЕНИЕ (красные) ===
-                 with col_red:
-                     st.markdown("#### 🔴 Восстановление лунок")
-                     if removed_wells:
-                         well_to_restore = st.selectbox(
-                             "Лунка:",
-                             sorted(removed_wells, key=well_sort_key),
-                             key=f"restore_select_{selected_key}"
-                         )
-                         rows_to_restore = raw_df[raw_df[well_col].astype(str) == well_to_restore]
-                         count_restore = rows_to_restore.shape[0]
-                         st.markdown(f"Будет восстановлено **{count_restore} строк**")
+                        action_all = st.radio("Действие для всех:", ["Удалить все", "Заменить все '-' на NaN"], key=f"dash_all_action_{selected_key}")
+                        if st.button("⚙️ Применить ко всем", key=f"dash_all_apply_{selected_key}"):
+                            if action_all == "Удалить все":
+                                df = df[~df[well_col].astype(str).isin(wells_with_dash)].reset_index(drop=True)
+                            else:
+                                mask = df[well_col].astype(str).isin(wells_with_dash)
+                                df.loc[mask] = df.loc[mask].replace("-", np.nan)
+                            st.session_state[f"{selected_key}_data"] = df
+                            st.session_state[f"ver_{selected_key}"] += 1
+                            st.success("Обработка завершена")
+                            st.rerun()
+                    else:
+                        st.info("Нет лунок с '-'")
 
-                         if st.button("Восстановить", key=f"restore_btn_{selected_key}"):
-                             current_df = st.session_state[f"{selected_key}_data"]
-                             restored_df = pd.concat([current_df, rows_to_restore], ignore_index=True)
-                             current_wells = restored_df[well_col].astype(str).tolist()
-                             full_df = raw_df[raw_df[well_col].astype(str).isin(current_wells)].copy().reset_index(drop=True)
+                # === КРАСНЫЕ ===
+                with col_red:
+                    st.markdown("#### 🔴 Восстановление лунок")
+                    if removed_wells:
+                        # Одиночный выбор
+                        well_to_restore = st.selectbox("Одиночный выбор:", sorted(removed_wells, key=well_sort_key), key=f"restore_select_{selected_key}")
+                        if st.button("Восстановить", key=f"restore_btn_{selected_key}"):
+                            df_clean = df[df[well_col].astype(str) != well_to_restore].copy()
+                            df_restore = raw_df[raw_df[well_col].astype(str) == well_to_restore].copy()
+                            df_new = pd.concat([df_clean, df_restore], ignore_index=True)
+                            st.session_state[f"{selected_key}_data"] = df_new.reset_index(drop=True)
+                            st.session_state[f"ver_{selected_key}"] += 1
+                            st.success(f"Лунка {well_to_restore} восстановлена")
+                            st.rerun()
 
-                             st.session_state[f"{selected_key}_data"] = full_df
-                             st.session_state[f"ver_{selected_key}"] += 1
-                             st.success(f"Восстановлено {count_restore} строк по {well_to_restore}")
-                             st.rerun()
-                     else:
-                         st.info("Нет удалённых лунок")
+                        # Множественный выбор
+                        multi_restore = st.multiselect("Множественный выбор:", sorted(removed_wells, key=well_sort_key), key=f"multi_restore_select_{selected_key}")
+                        if multi_restore and st.button("♻️ Восстановить выбранные", key=f"multi_restore_btn_{selected_key}"):
+                            df_clean = df[~df[well_col].astype(str).isin(multi_restore)].copy()
+                            df_restore = raw_df[raw_df[well_col].astype(str).isin(multi_restore)].copy()
+                            df_new = pd.concat([df_clean, df_restore], ignore_index=True)
+                            st.session_state[f"{selected_key}_data"] = df_new.reset_index(drop=True)
+                            st.session_state[f"ver_{selected_key}"] += 1
+                            st.success(f"Восстановлены: {', '.join(multi_restore)}")
+                            st.rerun()
 
-            # Полная таблица
+                        # Восстановить все
+                        if st.button("♻️ Восстановить все лунки", key=f"restore_all_{selected_key}"):
+                            df_clean = df.copy()
+                            df_restore = raw_df[raw_df[well_col].astype(str).isin(removed_wells)].copy()
+                            df_new = pd.concat([df_clean, df_restore], ignore_index=True)
+                            st.session_state[f"{selected_key}_data"] = df_new.reset_index(drop=True)
+                            st.session_state[f"ver_{selected_key}"] += 1
+                            st.success("Восстановлены все удалённые лунки")
+                            st.rerun()
+                    else:
+                        st.info("Нет удалённых лунок")
+
             with st.expander("📋 Показать таблицу данных по всем лункам"):
                 st.dataframe(df, use_container_width=True)
 
@@ -617,17 +629,26 @@ def neurotoxicity_app():
 
             dist_cols = [col for col in df.columns if isinstance(col, str) and "Distance moved" in col]
             velocity_cols = [col for col in df.columns if isinstance(col, str) and "Velocity" in col]
+            moving_cols = [col for col in df.columns if isinstance(col, str) and "Moving" in col]
+            not_moving_cols = [col for col in df.columns if isinstance(col, str) and "Not Moving" in col]
+            turn_angle_cols = [col for col in df.columns if isinstance(col, str) and "Turn angle" in col]
 
-            if not dist_cols or not velocity_cols:
+            if not dist_cols or not velocity_cols or not turn_angle_cols or not moving_cols or not not_moving_cols:
                 st.error("Отсутствуют необходимые колонки.")
                 st.stop()
 
             col_dist = dist_cols[0]
             col_velocity = velocity_cols[0]
+            col_moving = moving_cols[0]
+            col_not_moving = not_moving_cols[0]
+            col_turn_angle = turn_angle_cols[0]
             
             try:
-              df[col_dist] = pd.to_numeric(df[col_dist])#, errors="coerce")
-              df[col_velocity] = pd.to_numeric(df[col_velocity])#, errors="coerce")
+              df[col_dist] = pd.to_numeric(df[col_dist])
+              df[col_velocity] = pd.to_numeric(df[col_velocity])
+              df[col_moving] = pd.to_numeric(df[col_moving])
+              df[col_not_moving] = pd.to_numeric(df[col_not_moving])
+              df[col_turn_angle] = pd.to_numeric(df[col_turn_angle])
 
               time_order = df[col_time].dropna().unique().tolist()
               time_mapping = {t: str((i + 1) * 2) for i, t in enumerate(time_order)}
@@ -654,6 +675,64 @@ def neurotoxicity_app():
                       return "Invalid"
 
               df["Segment"] = df["TimeNumeric"].apply(get_segment)
+
+              # === MOVING / NOT MOVING RATIO ===
+              moving_col = "Movement (Moving / Center-point, Cumulative Duration, s)"
+              notmoving_col = "Movement (Not Moving / Center-point, Cumulative Duration, s)"
+
+              if moving_col not in df.columns or notmoving_col not in df.columns:
+                  st.error("❌ В таблице не найдены нужные колонки для расчёта отношения Moving / Not Moving.")
+                  st.stop()
+
+              mov_avg = (
+                  df.groupby([col_well, "Segment"], sort=False)[moving_col]
+                  .mean()
+                  .unstack()
+                  .add_prefix("mov_avg_")
+              )
+
+              notmov_avg = (
+                  df.groupby([col_well, "Segment"], sort=False)[notmoving_col]
+                  .mean()
+                  .unstack()
+                  .add_prefix("notmov_avg_")
+              )
+
+              moving_ratio_df = pd.DataFrame(index=mov_avg.index)
+
+              for seg in ["1", "2", "3", "4", "5"]:
+                  mov = mov_avg.get(f"mov_avg_{seg}", np.nan)
+                  notmov = notmov_avg.get(f"notmov_avg_{seg}", np.nan).replace(0, np.nan)
+                  moving_ratio_df[f"M_moving_not_moving_ratio_{seg}"] = mov / notmov
+
+              moving_ratio_df = moving_ratio_df.reset_index()
+
+              # === TURN ANGLE MEAN ±abs по сегментам ===
+              angle_col = "Turn angle (Center-point / relative, Mean, deg)"
+              if angle_col not in df.columns:
+                  st.error("❌ Колонка с Turn angle не найдена.")
+                  st.stop()
+
+              angle_mean_df = (
+                  df.groupby([col_well, "Segment"], sort=False)[angle_col]
+                  .agg(['mean', lambda x: x.abs().mean()])
+                  .rename(columns={"mean": "signed", "<lambda_0>": "abs_mean"})
+                  .reset_index()
+              )
+
+              angle_pivot_signed = angle_mean_df.pivot(index=col_well, columns="Segment", values="signed").add_prefix("T_angle_mean_")
+              angle_pivot_abs = angle_mean_df.pivot(index=col_well, columns="Segment", values="abs_mean").add_prefix("T_angle_mean_abs_")
+
+              # Собрать в нужном порядке: abs_1, mean_1, abs_2, mean_2, ...
+              angle_combined = angle_pivot_abs.copy()
+              for s in ["1", "2", "3", "4", "5"]:
+                  angle_combined[f"T_angle_mean_{s}"] = angle_pivot_signed[f"T_angle_mean_{s}"]
+
+              combined_cols = []
+              for s in ["1", "2", "3", "4", "5"]:
+                  combined_cols += [f"T_angle_mean_abs_{s}", f"T_angle_mean_{s}"]
+
+              angle_combined = angle_combined[combined_cols].reset_index()
 
               # === DISTANCE ===
               total_df = df.groupby(col_well, sort=False)[col_dist].sum().reset_index()
@@ -690,6 +769,8 @@ def neurotoxicity_app():
               # === ОБЪЕДИНЕНИЕ ВСЕХ ===
               merged_df = result_dist.merge(vel_mean_df, on=col_well, how="left")
               merged_df = merged_df.merge(vel_var_df, on=col_well, how="left")
+              merged_df = merged_df.merge(moving_ratio_df, on=col_well, how="left")
+              merged_df = merged_df.merge(angle_combined, on=col_well, how="left")
 
               # === ДОБАВИМ ОТНОШЕНИЯ V_mean ===
               def compute_ratio(df, num, denom):
@@ -713,7 +794,12 @@ def neurotoxicity_app():
                   if m in merged_df.columns and v in merged_df.columns:
                       vel_cols += [m, v]
               ratio_cols = [col for col in merged_df.columns if col.startswith("V_ratio_")]
-              final_cols = base_cols + dist_seg_cols + vel_cols + ratio_cols
+              moving_ratio_cols = [col for col in merged_df.columns if col.startswith("M_moving_not_moving_ratio_")]
+              angle_cols = []
+              for s in ["1", "2", "3", "4", "5"]:
+                  angle_cols += [f"T_angle_mean_abs_{s}", f"T_angle_mean_{s}"]
+
+              final_cols = base_cols + dist_seg_cols + vel_cols + ratio_cols + moving_ratio_cols + angle_cols
               merged_df = merged_df[[c for c in final_cols if c in merged_df.columns]]
 
               # Порядок лунок
