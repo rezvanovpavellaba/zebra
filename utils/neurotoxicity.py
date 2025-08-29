@@ -632,8 +632,14 @@ def neurotoxicity_app():
             moving_cols = [col for col in df.columns if isinstance(col, str) and "Moving" in col]
             not_moving_cols = [col for col in df.columns if isinstance(col, str) and "Not Moving" in col]
             turn_angle_cols = [col for col in df.columns if isinstance(col, str) and "Turn angle" in col]
+            angular_velocity_cols = [col for col in df.columns if isinstance(col, str) and "Angular velocity" in col]
+            meander_cols = [col for col in df.columns if isinstance(col, str) and "Meander" in col and "Mean" in col and "Total" not in col]
+            meander_total_cols = [col for col in df.columns if isinstance(col, str) and "Meander" in col and "Total" in col]
+            cw_cols = [col for col in df.columns if isinstance(col, str) and col.startswith("CW Rotation")]
+            ccw_cols = [col for col in df.columns if isinstance(col, str) and col.startswith("CCW Rotation")]
+       
 
-            if not dist_cols or not velocity_cols or not turn_angle_cols or not moving_cols or not not_moving_cols:
+            if not dist_cols or not velocity_cols or not turn_angle_cols or not moving_cols or not not_moving_cols or not angular_velocity_cols or not meander_cols or not meander_total_cols or not cw_cols or not ccw_cols:
                 st.error("Отсутствуют необходимые колонки.")
                 st.stop()
 
@@ -642,6 +648,11 @@ def neurotoxicity_app():
             col_moving = moving_cols[0]
             col_not_moving = not_moving_cols[0]
             col_turn_angle = turn_angle_cols[0]
+            col_ang_velocity = angular_velocity_cols[0]
+            col_meander = meander_cols[0]
+            col_meander_total = meander_total_cols[0]
+            col_cw = cw_cols[0]
+            col_ccw = ccw_cols[0]
             
             try:
               df[col_dist] = pd.to_numeric(df[col_dist])
@@ -649,6 +660,11 @@ def neurotoxicity_app():
               df[col_moving] = pd.to_numeric(df[col_moving])
               df[col_not_moving] = pd.to_numeric(df[col_not_moving])
               df[col_turn_angle] = pd.to_numeric(df[col_turn_angle])
+              df[col_ang_velocity] = pd.to_numeric(df[col_ang_velocity])
+              df[col_meander] = pd.to_numeric(df[col_meander])
+              df[col_meander_total] = pd.to_numeric(df[col_meander_total])
+              df[col_cw] = pd.to_numeric(df[col_cw])
+              df[col_ccw] = pd.to_numeric(df[col_ccw])
 
               time_order = df[col_time].dropna().unique().tolist()
               time_mapping = {t: str((i + 1) * 2) for i, t in enumerate(time_order)}
@@ -675,6 +691,64 @@ def neurotoxicity_app():
                       return "Invalid"
 
               df["Segment"] = df["TimeNumeric"].apply(get_segment)
+
+              # === ROTATION CW / CCW: среднее и отношение по сегментам ===
+              cw_mean = df.groupby([col_well, "Segment"], sort=False)[col_cw].mean().unstack().add_prefix("CW_rotation_mean_")
+              ccw_mean = df.groupby([col_well, "Segment"], sort=False)[col_ccw].mean().unstack().add_prefix("CCW_rotation_mean_")
+
+
+              ratio_df = pd.DataFrame(index=cw_mean.index)
+              for s in ["1", "2", "3", "4", "5"]:
+                  cw_col = f"CW_rotation_mean_{s}"
+                  ccw_col = f"CCW_rotation_mean_{s}"
+                  ratio_col = f"Rotation_ratio_CW_CCW_{s}"
+                  ratio_df[ratio_col] = cw_mean.get(cw_col, np.nan) / ccw_mean.get(ccw_col, np.nan).replace(0, np.nan)
+
+              rotation_combined = pd.concat([cw_mean, ccw_mean, ratio_df], axis=1).reset_index()
+
+              # === MEANDER TOTAL: сумма по модулю по всем сегментам ===
+              meander_total_df = (
+                  df.groupby(col_well, sort=False)[col_meander_total]
+                  .apply(lambda x: x.abs().sum())
+                  .reset_index()
+                  .rename(columns={col_meander_total: "M_t_total_abs"})
+              )
+
+              # === MEANDER MEAN: сумма и среднее по модулю ===
+              meander_df = (
+                  df.groupby([col_well, "Segment"], sort=False)[col_meander]
+                  .agg(['sum', lambda x: x.abs().mean()])
+                  .rename(columns={"sum": "signed_sum", "<lambda_0>": "abs_mean"})
+                  .reset_index()
+              )
+
+              meander_pivot_signed = meander_df.pivot(index=col_well, columns="Segment", values="signed_sum").add_prefix("M_m_sum_")
+              meander_pivot_abs = meander_df.pivot(index=col_well, columns="Segment", values="abs_mean").add_prefix("M_m_mean_abs_")
+
+              meander_combined = meander_pivot_abs.copy()
+              for s in ["1", "2", "3", "4", "5"]:
+                  meander_combined[f"M_m_sum_{s}"] = meander_pivot_signed[f"M_m_sum_{s}"]
+
+              meander_combined = meander_combined.reset_index()
+
+              # === ANGULAR VELOCITY: среднее по модулю и сумма ===
+              angvel_df = (
+                  df.groupby([col_well, "Segment"], sort=False)[col_ang_velocity]
+                  .agg(['sum', lambda x: x.abs().mean()])
+                  .rename(columns={"sum": "signed_sum", "<lambda_0>": "abs_mean"})
+                  .reset_index()
+              )
+
+              angvel_pivot_signed = angvel_df.pivot(index=col_well, columns="Segment", values="signed_sum").add_prefix("A_v_sum_")
+              angvel_pivot_abs = angvel_df.pivot(index=col_well, columns="Segment", values="abs_mean").add_prefix("A_v_mean_abs_")
+
+              # Собрать в нужном порядке
+              angvel_combined = angvel_pivot_abs.copy()
+              for s in ["1", "2", "3", "4", "5"]:
+                  angvel_combined[f"A_v_sum_{s}"] = angvel_pivot_signed[f"A_v_sum_{s}"]
+
+              # Финализируем
+              angvel_combined = angvel_combined.reset_index()
 
               # === MOVING / NOT MOVING RATIO ===
               moving_col = "Movement (Moving / Center-point, Cumulative Duration, s)"
@@ -771,6 +845,10 @@ def neurotoxicity_app():
               merged_df = merged_df.merge(vel_var_df, on=col_well, how="left")
               merged_df = merged_df.merge(moving_ratio_df, on=col_well, how="left")
               merged_df = merged_df.merge(angle_combined, on=col_well, how="left")
+              merged_df = merged_df.merge(angvel_combined, on=col_well, how="left")
+              merged_df = merged_df.merge(meander_combined, on=col_well, how="left")
+              merged_df = merged_df.merge(meander_total_df, on=col_well, how="left")
+              merged_df = merged_df.merge(rotation_combined, on=col_well, how="left")
 
               # === ДОБАВИМ ОТНОШЕНИЯ V_mean ===
               def compute_ratio(df, num, denom):
@@ -798,8 +876,27 @@ def neurotoxicity_app():
               angle_cols = []
               for s in ["1", "2", "3", "4", "5"]:
                   angle_cols += [f"T_angle_mean_abs_{s}", f"T_angle_mean_{s}"]
+              
+              angvel_cols = []
+              for s in ["1", "2", "3", "4", "5"]:
+                  angvel_cols += [f"A_v_mean_abs_{s}", f"A_v_sum_{s}"]
 
-              final_cols = base_cols + dist_seg_cols + vel_cols + ratio_cols + moving_ratio_cols + angle_cols
+              meander_cols = []
+              for s in ["1", "2", "3", "4", "5"]:
+                  meander_cols += [f"M_m_mean_abs_{s}", f"M_m_sum_{s}"]
+
+              rotation_cols = []
+              for s in ["1", "2", "3", "4", "5"]:
+                  rotation_cols += [
+                      f"CW_rotation_mean_{s}",
+                      f"CCW_rotation_mean_{s}",
+                      f"Rotation_ratio_CW_CCW_{s}",
+                  ]
+
+              # Объединение всех колонок
+              final_cols = base_cols + dist_seg_cols + vel_cols + ratio_cols + moving_ratio_cols + angle_cols + angvel_cols + meander_cols
+              final_cols += ["M_t_total_abs"]
+              final_cols += rotation_cols
               merged_df = merged_df[[c for c in final_cols if c in merged_df.columns]]
 
               # Порядок лунок
