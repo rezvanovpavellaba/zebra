@@ -908,7 +908,7 @@ def neurotoxicity_app():
               # Скачивание
               towrite = io.BytesIO()
               with pd.ExcelWriter(towrite, engine="openpyxl") as writer:
-                  merged_df.to_excel(writer, index=False, sheet_name="Distance_Velocity_Summary")
+                  merged_df.to_excel(writer, index=False, sheet_name="Calculations_inside_well")
               towrite.seek(0)
               st.download_button(
                   label="⬇️ Скачать таблицу расчётов",
