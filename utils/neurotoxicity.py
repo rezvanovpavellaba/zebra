@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from matplotlib.cm import get_cmap
 import numpy as np
 import plotly.graph_objects as go
+import pathlib
 
 
 # === УТИЛИТЫ ===
@@ -336,42 +337,130 @@ def neurotoxicity_app():
                 with col_orange:
                     st.markdown("#### 🟠 Обработка лунок с '-'")
                     if wells_with_dash:
-                        well_dash = st.selectbox("Одиночный выбор:", sorted(wells_with_dash, key=well_sort_key), key=f"dash_select_{selected_key}")
-                        action = st.radio("Действие:", ["Удалить лунку", "Заменить '-' на NaN"], key=f"dash_action_{selected_key}")
+                        well_dash = st.selectbox(
+                            "Одиночный выбор:",
+                            sorted(wells_with_dash, key=well_sort_key),
+                            key=f"dash_select_{selected_key}"
+                        )
+
+                        # ➕ ДОБАВИЛИ третий режим: "Заменить '-' на 0"
+                        action = st.radio(
+                            "Действие:",
+                            ["Удалить лунку", "Заменить '-' на NaN", "Заменить '-' на 0"],
+                            key=f"dash_action_{selected_key}"
+                        )
+
                         if st.button("Применить", key=f"dash_apply_{selected_key}"):
                             if action == "Удалить лунку":
                                 df = df[df[well_col].astype(str) != well_dash].reset_index(drop=True)
                             else:
+                                # заменяем только в метриках, а не в мета-колонках
                                 mask = df[well_col].astype(str) == well_dash
-                                df.loc[mask] = df.loc[mask].replace("-", np.nan)
+                                if action == "Заменить '-' на NaN":
+                                    df.loc[mask, data_cols] = df.loc[mask, data_cols].replace("-", np.nan)
+                                else:  # "Заменить '-' на 0"
+                                    # сразу ставим числовой 0, чтобы потом .to_numeric проходил без ошибок
+                                    df.loc[mask, data_cols] = df.loc[mask, data_cols].replace("-", 0)
+
                             st.session_state[f"{selected_key}_data"] = df
                             st.session_state[f"ver_{selected_key}"] += 1
                             st.rerun()
 
-                        st.dataframe(df[df[well_col].astype(str) == well_dash].style.applymap(
-                            lambda val: "background-color: #ffd699" if isinstance(val, str) and val.strip() == "-" else ""
-                        ), use_container_width=True)
+                        # # Подсветка ячеек с '-'
+                        # # 📋 Просмотр с подсветкой
+                        # st.markdown("##### 📋 Таблица с подсветкой '-' (только просмотр)")
+                        highlight_df = df[df[well_col].astype(str) == well_dash].copy()
+                        # st.dataframe(
+                        #     highlight_df.style.applymap(
+                        #         lambda val: "background-color: #ffd699" if isinstance(val, str) and val.strip() == "-" else ""
+                        #     ),
+                        #     use_container_width=True
+                        # )
 
-                        multi_dash = st.multiselect("Множественный выбор:", sorted(wells_with_dash, key=well_sort_key), key=f"dash_multi_select_{selected_key}")
+                        # 🧠 Создаём копию для редактирования и добавим колонку ⚠️
+                        st.markdown("##### 📝 Редактируемая таблица")
+                        editable_df = highlight_df.copy()
+
+                        # Преобразуем все метрики в строки, чтобы точно редактировалось
+                        editable_df[data_cols] = editable_df[data_cols].astype(str)
+                        editable_df.reset_index(drop=True, inplace=True)
+
+                        # Добавим колонку "⚠️", если есть хотя бы одно "-"
+                        editable_df["⚠️"] = editable_df[data_cols].astype(str).apply(
+                            lambda row: "⚠️" if any(cell.strip() == "-" for cell in row) else "",
+                            axis=1
+                        )
+
+                        # Показываем редактор
+                        edited_df = st.data_editor(
+                            editable_df,
+                            use_container_width=True,
+                            key=f"editor_{selected_key}_{well_dash}"
+                        )
+
+                        # Кнопка сохранения изменений
+                        if st.button("💾 Сохранить изменения", key=f"save_edits_{selected_key}_{well_dash}"):
+                           # Определим строки, соответствующие этой лунке
+                           mask = df[well_col].astype(str) == well_dash
+                           well_indices = df[mask].index
+
+                           # Удалим колонку "⚠️" перед вставкой
+                           edited_clean = edited_df.drop(columns=["⚠️"])
+
+                           if len(well_indices) == len(edited_clean):
+                               df_updated = df.copy()
+                               for orig_idx, (_, row) in zip(well_indices, edited_clean.iterrows()):
+                                   df_updated.loc[orig_idx] = row
+
+                               st.session_state[f"{selected_key}_data"] = df_updated
+                               st.session_state[f"ver_{selected_key}"] += 1
+                               st.success(f"Изменения для лунки {well_dash} сохранены.")
+                               st.rerun()
+                           else:
+                               st.error("❌ Количество строк изменилось. Возможно, вы удалили строку — сохранение невозможно.")
+
+                        # === Множественный выбор ===
+                        multi_dash = st.multiselect(
+                            "Множественный выбор:",
+                            sorted(wells_with_dash, key=well_sort_key),
+                            key=f"dash_multi_select_{selected_key}"
+                        )
                         if multi_dash:
-                            multi_action = st.radio("Действие для выбранных:", ["Удалить", "Заменить '-' на NaN"], key=f"dash_multi_action_{selected_key}")
+                            multi_action = st.radio(
+                                "Действие для выбранных:",
+                                ["Удалить", "Заменить '-' на NaN", "Заменить '-' на 0"],
+                                key=f"dash_multi_action_{selected_key}"
+                            )
                             if st.button("⚙️ Применить к выбранным", key=f"dash_multi_apply_{selected_key}"):
                                 if multi_action == "Удалить":
                                     df = df[~df[well_col].astype(str).isin(multi_dash)].reset_index(drop=True)
-                                else:
+                                elif multi_action == "Заменить '-' на NaN":
                                     mask = df[well_col].astype(str).isin(multi_dash)
-                                    df.loc[mask] = df.loc[mask].replace("-", np.nan)
+                                    df.loc[mask, data_cols] = df.loc[mask, data_cols].replace("-", np.nan)
+                                else:  # "Заменить '-' на 0"
+                                    mask = df[well_col].astype(str).isin(multi_dash)
+                                    df.loc[mask, data_cols] = df.loc[mask, data_cols].replace("-", 0)
+
                                 st.session_state[f"{selected_key}_data"] = df
                                 st.session_state[f"ver_{selected_key}"] += 1
                                 st.rerun()
 
-                        action_all = st.radio("Действие для всех:", ["Удалить все", "Заменить все '-' на NaN"], key=f"dash_all_action_{selected_key}")
+                        # === Массовая обработка всех оранжевых ===
+                        action_all = st.radio(
+                            "Действие для всех:",
+                            ["Удалить все", "Заменить все '-' на NaN", "Заменить все '-' на 0"],
+                            key=f"dash_all_action_{selected_key}"
+                        )
                         if st.button("⚙️ Применить ко всем", key=f"dash_all_apply_{selected_key}"):
                             if action_all == "Удалить все":
                                 df = df[~df[well_col].astype(str).isin(wells_with_dash)].reset_index(drop=True)
-                            else:
+                            elif action_all == "Заменить все '-' на NaN":
                                 mask = df[well_col].astype(str).isin(wells_with_dash)
-                                df.loc[mask] = df.loc[mask].replace("-", np.nan)
+                                df.loc[mask, data_cols] = df.loc[mask, data_cols].replace("-", np.nan)
+                            else:  # "Заменить все '-' на 0"
+                                mask = df[well_col].astype(str).isin(wells_with_dash)
+                                df.loc[mask, data_cols] = df.loc[mask, data_cols].replace("-", 0)
+
                             st.session_state[f"{selected_key}_data"] = df
                             st.session_state[f"ver_{selected_key}"] += 1
                             st.success("Обработка завершена")
@@ -917,5 +1006,43 @@ def neurotoxicity_app():
                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                   key="dl_summary_calc"
               )
+
+              # Путь к справке
+              help_path = pathlib.Path("docs/metrics_explained.txt")
+
+              if help_path.exists():
+                  with st.expander("ℹ️ Справка по метрикам", expanded=False):
+                      with open(help_path, "r", encoding="utf-8") as f:
+                          lines = f.readlines()
+
+                      # Парсинг в словарь: ключ — метрика, значение — описание
+                      help_dict = {}
+                      for line in lines:
+                          if "—" in line:
+                              key, desc = line.split("—", 1)
+                              help_dict[key.strip()] = desc.strip()
+
+                      # Поле поиска
+                      query = st.text_input("🔍 Введите название или часть описания метрики:")
+
+                      if query:
+                          # Поиск по ключу или описанию
+                          results = {
+                              k: v for k, v in help_dict.items()
+                              if query.lower() in k.lower() or query.lower() in v.lower()
+                          }
+                          if results:
+                              st.markdown("### 🔎 Результаты поиска:")
+                              for k, v in results.items():
+                                  st.markdown(f"**`{k}`** — {v}")
+                          else:
+                              st.info("❗ Ничего не найдено.")
+                      else:
+                          st.markdown("### 📋 Все метрики:")
+                          for k, v in help_dict.items():
+                              st.markdown(f"**`{k}`** — {v}")
+              else:
+                  st.warning("Файл справки по метрикам не найден: `docs/metrics_explained.txt`")
+
             except ValueError as e:
                st.error(f"❌ В данных есть необработанные значения ('-'). Перейдите во вкладку «⚙️ Анализ данных» и обработайте их.")
