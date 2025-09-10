@@ -729,7 +729,7 @@ def neurotoxicity_app():
     # 📐 Вкладка расчётов
     # ================
     with tab_calc:
-        st.markdown("### 📐 Расчёт Distance и Velocity по каждой лунке и сегментам (10-мин)")
+        st.markdown("### 📐 Расчёт поведенческих метрик по каждой лунке и сегментам (10-мин)")
 
         key_selected_calc = st.selectbox("Выберите файл для расчётов:", file_keys, key="select_calc")
 
@@ -1197,7 +1197,7 @@ def neurotoxicity_app():
 
                   # Добавляем Volcano Plot только для режима log₂(B/A)
                   if st.session_state["fc_mode_neuro"] == 'log₂(B/A)':
-                      st.subheader("Volcano Plot (для максимальной концентрации)")
+                      st.subheader("Volcano Plot")
                       st.write("""
                       **Интерпретация Volcano Plot:**
                       - Точки в верхних правом/левом углах — значимые изменения (большой |log2FC| и низкий p-value)
@@ -1210,6 +1210,7 @@ def neurotoxicity_app():
 
                       # Графики Vulcano
                       available_drugs = fc_df['Compound'].unique()
+                      available_concentrations= fc_df['Concentration'].unique()
 
 
                       if 'show_vulcano_plot_neuro' not in st.session_state:
@@ -1224,6 +1225,14 @@ def neurotoxicity_app():
                               default=available_drugs[:min(5, len(available_drugs))],  # Первые 5 по умолчанию
                               key="volcano_drugs_neuro"
                           )
+
+                          volcano_conc = st.selectbox(
+                              "Выберите концентрацию для Volcano Plot",
+                              available_concentrations,
+                              index=1,  # Первая тестовая
+                              key="volcano_conc_neuro"
+                          )
+                          
                           
                           # Настройки отображения
                           with st.expander("Настройки Volcano Plot"):
@@ -1286,10 +1295,11 @@ def neurotoxicity_app():
                           if submitted_volcano:
                              st.session_state['show_vulcano_plot_neuro'] = True
 
-                      if st.session_state['show_vulcano_plot_neuro'] and volcano_drugs:
+                      if st.session_state['show_vulcano_plot_neuro'] and volcano_drugs and volcano_conc:
                           significant_df = plot_volcano(
                               fc_df, 
-                              volcano_drugs, 
+                              volcano_drugs,
+                              volcano_conc, 
                               p_value_threshold=p_value_threshold,
                               log2fc_threshold=log2fc_threshold,
                               custom_colors=volcano_colors,

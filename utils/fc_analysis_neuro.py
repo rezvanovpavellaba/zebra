@@ -4,7 +4,7 @@ import plotly.express as px
 import pandas as pd
 import numpy as np
 
-def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold=1.0, 
+def plot_volcano(fc_df, selected_drugs,selected_conc, p_value_threshold=0.05, log2fc_threshold=1.0, 
                 custom_colors=None, show_legend=True, 
                 hline_color='red', vline_color='gray'):
     """
@@ -15,14 +15,18 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
         st.warning("Выберите препараты для Volcano Plot.")
         return None
     
+    if not selected_conc:
+        st.warning("Выберите концентрацию для Volcano Plot.")
+        return None
+    
     # Фильтрация данных
     volcano_data = []
     for drug in selected_drugs:
         drug_data = fc_df[(fc_df['Compound'] == drug) & (fc_df['Test/control'] == 'Test')]
         if not drug_data.empty:
-            max_conc = drug_data['Concentration'].max()
-            max_conc_data = drug_data[drug_data['Concentration'] == max_conc].copy()
-            volcano_data.append(max_conc_data)
+            current_conc = selected_conc
+            current_conc_data = drug_data[drug_data['Concentration'] == current_conc].copy()
+            volcano_data.append(current_conc_data)
     
     if not volcano_data:
         st.error("Нет данных для Volcano Plot.")
