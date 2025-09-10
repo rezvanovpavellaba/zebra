@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import io
 import plotly.express as px
-from scipy.stats import ttest_ind
+from scipy.stats import ttest_ind, shapiro, mannwhitneyu
 from utils.radio_unit import *
 import re
 from collections import defaultdict
@@ -262,16 +262,29 @@ def calculate_fold_change_with_pvalues(df, mode='ratio'):
                     elif mode == 'log2_ratio':
                         fc = np.log2(ratio) if ratio > 0 else None #(проверено в Excel) т.к нельзя вычислить логарифм нуля
                 
-                # Классический t-тест Стьюдента (равные дисперсии)
+                # Тест на нормальность
                 try:
-                    _, p_value = ttest_ind(control_vals, test_vals)
+                    p_norm_control = shapiro(control_vals).pvalue if len(control_vals) >= 3 else 1
+                    p_norm_test = shapiro(test_vals).pvalue if len(test_vals) >= 3 else 1
                 except:
-                    p_value = None  # в случае ошибки
+                    p_norm_control = p_norm_test = 1  # безопасное значение
+
+                # Выбор теста
+                try:
+                    if p_norm_control < 0.05 or p_norm_test < 0.05:
+                        _, p_value = mannwhitneyu(control_vals, test_vals, alternative='two-sided')
+                        print("mann")
+                    else:
+                        _, p_value = ttest_ind(control_vals, test_vals, equal_var=False)
+                        print("student")
+                except:
+                    p_value = None
                 
                 result_row[metabolite] = fc
                 result_row[f'{metabolite} (pvalue)'] = p_value
             
             results.append(result_row)
+    
     
     # Создаём DataFrame
     result_df = pd.DataFrame(results)
@@ -462,7 +475,7 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
         legend=dict(
             font=dict(color='black'),
             title_font=dict(color='black'),
-            title_text='Препараты',
+            title_text='Drugs',
             bgcolor='rgba(255,255,255,0.7)',
             bordercolor='rgba(0,0,0,0)',
             borderwidth=0
@@ -549,98 +562,6 @@ def calculate_descriptive_stats_new(df, group_cols, value_cols):
     stats = stats[column_order]
     
     return stats
-
-
-
-def calculate_fold_change_with_pvalues(df, mode='ratio'):
-    """
-    Расчёт Fold Change и p-values с использованием t-теста Стьюдента.
-    Предполагает равенство дисперсий в группах.
-    """
-    metabolite_cols = [col for col in df.columns 
-                      if col not in ['Drug', 'Group', 'Concentration']]
-    
-    results = []
-    warnings = []
-    
-    for drug in df['Drug'].unique():
-        drug_data = df[df['Drug'] == drug]
-        control_data = drug_data[drug_data['Group'] == 'control_neg']
-        test_data = drug_data[drug_data['Group'] == 'test']
-        
-        # Добавляем строку "контроль против контроля"
-        control_row = {
-            'Drug': drug,
-            'Group': 'control_vs_control',
-            'Concentration': control_data['Concentration'].mean()
-        }
-        for metabolite in metabolite_cols:
-            if mode == 'ratio':
-                control_row[metabolite] = 1.0 #(проверено в Excel) т.к число деленное на само себя
-            elif mode == 'difference':
-                control_row[metabolite] = 0.0 #(проверено в Excel) т.к 0 в числителе
-            elif mode == 'log2_ratio':
-                control_row[metabolite] = 0.0 #(проверено в Excel) т.к правила вычисления логарифма
-            control_row[f'{metabolite} (pvalue)'] = 1.0  # p-value для контроля = 1 (проверено в Excel)
-        results.append(control_row)
-        
-        # Обрабатываем тестовые группы
-        for conc in test_data['Concentration'].unique():
-            test_subset = test_data[test_data['Concentration'] == conc]
-            
-            result_row = {
-                'Drug': drug,
-                'Group': 'test',
-                'Concentration': conc
-            }
-            
-            for metabolite in metabolite_cols:
-                control_vals = control_data[metabolite].values
-                test_vals = test_subset[metabolite].values
-                
-                # Проверка количества данных
-                if len(control_vals) < 2 or len(test_vals) < 2:  # Хотя бы 2 точки в тесте для FC
-                    p_value = None
-                    if len(test_vals) < 2:
-                        warnings.append(f"{metabolite} (Drug: {drug}, Conc: {conc})")
-                    continue
-                
-                # Рассчитываем Fold Change
-                control_mean = np.mean(control_vals)
-                if control_mean == 0:
-                    fc = None
-                else:
-                    ratio = np.mean(test_vals) / control_mean
-                    if mode == 'ratio':
-                        fc = ratio
-                    elif mode == 'difference':
-                        fc = (np.mean(test_vals) - control_mean) / control_mean
-                    elif mode == 'log2_ratio':
-                        fc = np.log2(ratio) if ratio > 0 else None #(проверено в Excel) т.к нельзя вычислить логарифм нуля
-                
-                # Классический t-тест Стьюдента (равные дисперсии)
-                try:
-                    _, p_value = ttest_ind(control_vals, test_vals)
-                except:
-                    p_value = None  # в случае ошибки
-                
-                result_row[metabolite] = fc
-                result_row[f'{metabolite} (pvalue)'] = p_value
-            
-            results.append(result_row)
-    
-    # Создаём DataFrame
-    result_df = pd.DataFrame(results)
-    
-    # Переупорядочиваем столбцы: сначала все обычные, затем все p-value
-    non_pvalue_cols = [col for col in result_df.columns if '(pvalue)' not in col]
-    pvalue_cols = [col for col in result_df.columns if '(pvalue)' in col]
-    
-    # Упорядочиваем столбцы
-    ordered_cols = non_pvalue_cols + pvalue_cols
-    result_df = result_df[ordered_cols]
-    
-    return result_df, warnings
 
 
 def load_and_preprocess_data(uploaded_file):
