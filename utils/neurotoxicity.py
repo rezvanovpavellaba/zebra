@@ -7,9 +7,33 @@ from matplotlib.cm import get_cmap
 import numpy as np
 import plotly.graph_objects as go
 import pathlib
+from utils.fc_analysis_neuro import *
 
 
 # === УТИЛИТЫ ===
+
+# Если у Control пустой Compound -> взять значение Compound из Test для того же эксперимента
+def fill_control_compound(df):
+    # Словарь: концентрация -> compound (по Test)
+    mapping = (
+        df.loc[df["Test/control"] == "Test", ["Concentration", "Compound"]]
+        .drop_duplicates(subset=["Concentration"])
+        .set_index("Concentration")["Compound"]
+        .to_dict()
+    )
+    # Заполняем Control тем же Compound, что и у Test (берём первую попавшуюся запись)
+    mask = (df["Test/control"] == "Control") & (df["Compound"].isna() | (df["Compound"] == ""))
+    if mask.any() and mapping:
+        common_compound = list(mapping.values())[0]  # берём первое (Compound один для всех Test)
+        df.loc[mask, "Compound"] = common_compound
+    return df
+
+def sort_wells(wells):
+    def key_fn(w):
+        letter = w[0]                       # буква (A–H)
+        number = int(w[1:]) if w[1:].isdigit() else 0  # число после буквы
+        return (letter, number)
+    return ", ".join(sorted(wells, key=key_fn))
 
 def file_md5(file_bytes: bytes) -> str:
     return hashlib.md5(file_bytes).hexdigest()
@@ -930,6 +954,9 @@ def neurotoxicity_app():
               vel_var_df = vel_var_df.rename(columns=lambda x: f"V_var_{x}" if x != col_well else x)
 
               # === ОБЪЕДИНЕНИЕ ВСЕХ ===
+              # === Извлечение мета-информации по каждой лунке (первая строка на каждую well_id)
+              meta_df = df[[col_well, "Test/control", "Compound", "Concentration"]].drop_duplicates(subset=col_well)
+              
               merged_df = result_dist.merge(vel_mean_df, on=col_well, how="left")
               merged_df = merged_df.merge(vel_var_df, on=col_well, how="left")
               merged_df = merged_df.merge(moving_ratio_df, on=col_well, how="left")
@@ -938,6 +965,12 @@ def neurotoxicity_app():
               merged_df = merged_df.merge(meander_combined, on=col_well, how="left")
               merged_df = merged_df.merge(meander_total_df, on=col_well, how="left")
               merged_df = merged_df.merge(rotation_combined, on=col_well, how="left")
+
+              merged_df = merged_df.merge(meta_df, on=col_well, how="left")
+
+              # Приводим Concentration к числовому дальше нужно будет
+              if "Concentration" in merged_df.columns:
+                  merged_df["Concentration"] = pd.to_numeric(merged_df["Concentration"], errors="coerce") #здесь тихая замена не страшна, т.к. в данном случае не должно быть None или чего-то еще
 
               # === ДОБАВИМ ОТНОШЕНИЯ V_mean ===
               def compute_ratio(df, num, denom):
@@ -952,7 +985,9 @@ def neurotoxicity_app():
                   merged_df = compute_ratio(merged_df, a, b)
 
               # === ПОРЯДОК КОЛОНОК ===
-              base_cols = [col_well, "Distance Total"]
+              meta_cols = ["Test/control", "Compound", "Concentration"]
+              base_cols = [col_well] + meta_cols + ["Distance Total"]
+
               dist_seg_cols = [f"D_{i}" for i in ["1", "2", "3", "4", "5"]]
               vel_cols = []
               for seg in ["1", "2", "3", "4", "5"]:
@@ -991,6 +1026,9 @@ def neurotoxicity_app():
               # Порядок лунок
               merged_df[col_well] = pd.Categorical(merged_df[col_well], categories=original_well_order, ordered=True)
               merged_df = merged_df.sort_values(col_well).reset_index(drop=True)
+
+              # === ВСТАВИТЬ ЗДЕСЬ === Дополняем название препарата у контроля
+              merged_df = fill_control_compound(merged_df)
 
               st.dataframe(merged_df, use_container_width=True)
 
@@ -1043,6 +1081,244 @@ def neurotoxicity_app():
                               st.markdown(f"**`{k}`** — {v}")
               else:
                   st.warning("Файл справки по метрикам не найден: `docs/metrics_explained.txt`")
+
+              st.markdown("### 📊 Агрегация по группам лунок")
+
+              # Определяем ключевые колонки
+              meta_cols = ["Test/control", "Compound", "Concentration"]
+              well_col = merged_df.columns[0]  # обычно это well_id
+              data_cols = [col for col in merged_df.columns if col not in [well_col] + meta_cols]
+
+              # Добавим колонку со списком лунок
+              well_df = (
+                  merged_df
+                  .groupby(meta_cols, sort=False, dropna=False)[well_col]
+                  .apply(lambda x: sort_wells(x.dropna().astype(str)))
+                  .reset_index()
+                  .rename(columns={well_col: "Wells"})
+              )
+
+              # Считаем среднее и SD
+              agg_df = (
+                  merged_df
+                  .groupby(meta_cols, sort=False, dropna=False)[data_cols]
+                  .agg(['mean', 'std'])
+                  .reset_index()
+              )
+
+              # Уплощаем MultiIndex колонок
+              agg_df.columns = [
+                  f"{col[0]} ({col[1]})" if col[1] else col[0]
+                  for col in agg_df.columns.values
+              ]
+
+              # Объединяем с таблицей лунок
+              agg_df = pd.merge(agg_df, well_df, on=meta_cols, how="left")
+
+              # Переставим "Wells" в начало
+              cols = ["Wells"] + [c for c in agg_df.columns if c != "Wells"]
+              agg_df = agg_df[cols]
+
+              # Показываем
+              st.dataframe(agg_df, use_container_width=True)
+
+              # Скачивание
+              towrite = io.BytesIO()
+              with pd.ExcelWriter(towrite, engine="openpyxl") as writer:
+                  agg_df.to_excel(writer, index=False, sheet_name="Aggregated by group")
+              towrite.seek(0)
+              st.download_button(
+                  label="⬇️ Скачать агрегированные данные по группам",
+                  data=towrite,
+                  file_name=f"{key_selected_calc}_group_summary.xlsx",
+                  mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                  key="dl_group_summary"
+              )
+            
+              ##################FC
+
+              # Инициализация session state для fc_mode, если его еще нет
+              if "fc_mode_neuro" not in st.session_state:
+                  st.session_state["fc_mode_neuro"] = 'log₂(B/A)'  # Значение по умолчанию
+
+              fc_mode = st.radio(
+                    "Режим расчета Fold Change",
+                    ('ratio (B/A)', 'difference ((B-A)/A)', 'log₂(B/A)'),
+                    index=['ratio (B/A)', 'difference ((B-A)/A)', 'log₂(B/A)'].index(st.session_state["fc_mode_neuro"]),
+                    key="key_radio_fc_mode_neuro"
+                )
+
+              if fc_mode != st.session_state["fc_mode_neuro"]:
+                 st.session_state["fc_mode_neuro"] = fc_mode
+
+
+              mode = 'ratio' if fc_mode == 'ratio (B/A)' else 'difference' if fc_mode == 'difference ((B-A)/A)' else 'log2_ratio'
+
+              fc_df,warnings_fc = calculate_fold_change_with_pvalues(merged_df, mode=mode)
+
+              st.session_state['fc_df_neuro'] = fc_df
+              st.session_state['warnings_fc_neuro'] = warnings_fc
+
+              if 'fc_df_neuro' in st.session_state:
+                  fc_df = st.session_state['fc_df_neuro']
+                  warnings_fc = st.session_state['warnings_fc_neuro']
+                  
+                  st.subheader(f"Результаты расчета Fold Change ({st.session_state['fc_mode_neuro']})")
+                  st.dataframe(fc_df)
+
+                  with st.sidebar:
+
+                      if len(warnings_fc) !=0:
+
+                          selected_warnings_fc = st.selectbox(
+                              f"Отчет об ошибках в расчётах ({len(warnings_fc)} всего)",
+                              warnings_fc,
+                              index=0,
+                              key="warnings_fc_select_neuro"
+                          )
+
+                          st.error(f"Недостаточно данных для {selected_warnings_fc}, проверьте исходные данные на количество повторностей")
+                          
+
+                  # Кнопка скачивания полных результатов Fold Change
+                  output_fc = io.BytesIO()
+                  with pd.ExcelWriter(output_fc, engine='openpyxl') as writer:
+                      fc_df.to_excel(writer, index=False, sheet_name='Fold_Change')
+                  output_fc.seek(0)
+                  
+                  st.download_button(
+                      label="Скачать полные результаты Fold Change",
+                      data=output_fc,
+                      file_name=f"fold_change_results_{st.session_state['fc_mode_neuro']}.xlsx",
+                      mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                      key = "Скачать полные результаты Fold Change_neuro"
+
+                  )
+
+                  # Добавляем Volcano Plot только для режима log₂(B/A)
+                  if st.session_state["fc_mode_neuro"] == 'log₂(B/A)':
+                      st.subheader("Volcano Plot (для максимальной концентрации)")
+                      st.write("""
+                      **Интерпретация Volcano Plot:**
+                      - Точки в верхних правом/левом углах — значимые изменения (большой |log2FC| и низкий p-value)
+                      - Горизонтальная линия — порог значимости (p < выбранное значение)
+                      - Вертикальные линии — порог изменения (|log2FC| > выбранное значение)
+                      - Доступные пороги:
+                      - log2FC: 0.58 (1.5x), 1.0 (2x)
+                      - p-value: 0.001 (0.1%), 0.01 (1%), 0.05 (5%), 0.1 (10%)
+                      """)
+
+                      # Графики Vulcano
+                      available_drugs = fc_df['Compound'].unique()
+
+
+                      if 'show_vulcano_plot_neuro' not in st.session_state:
+                          st.session_state['show_vulcano_plot_neuro'] = False
+                      
+                      # Создаем отдельную форму для Volcano Plot
+                      with st.form("volcano_form_neuro"):
+                          # Независимый выбор препаратов
+                          volcano_drugs = st.multiselect(
+                              "Выберите препараты для Volcano Plot",
+                              available_drugs,
+                              default=available_drugs[:min(5, len(available_drugs))],  # Первые 5 по умолчанию
+                              key="volcano_drugs_neuro"
+                          )
+                          
+                          # Настройки отображения
+                          with st.expander("Настройки Volcano Plot"):
+                              col1, col2 = st.columns(2)
+                              with col1:
+                                  p_value_threshold = st.selectbox(
+                                      "Порог p-value (статистическая значимость)",
+                                      options=[0.001, 0.01, 0.05, 0.1],
+                                      index=2,  # 0.05 по умолчанию
+                                      format_func=lambda x: f"{x} ({'***' if x == 0.001 else '**' if x == 0.01 else '*' if x == 0.05 else 'ns'})",
+                                      help="Уровни значимости: *** - 0.1%, ** - 1%, * - 5%, ns - не значимо",
+                                      key= "Порог p-value (статистическая значимость)_neuro"
+                                  )
+                                  
+                                  log2fc_threshold = st.radio(
+                                      "Порог log2FC (кратность изменения)",
+                                      options=[1.0, 0.58],
+                                      index=0,  # 1.0 по умолчанию
+                                      format_func=lambda x: f"{x} ({'2-кратное' if x == 1.0 else '1.5-кратное'} изменение)",
+                                      horizontal=True,
+                                      key= "Порог log2FC (кратность изменения)_neuro"
+                                  )
+                              
+                              with col2:
+                                  # Настройки отображения
+                                  show_legend = st.checkbox(
+                                      "Показывать легенду", 
+                                      value=True,
+                                      key='volcano_show_legend_neuro'
+                                  )
+                                  
+                                  # Раздельные настройки цветов линий
+                                  hline_color = st.color_picker(
+                                      "Цвет горизонтальной линии (p-value)",
+                                      value='#FF0000',
+                                      key='volcano_hline_color_neuro'
+                                  )
+                                  
+                                  vline_color = st.color_picker(
+                                      "Цвет вертикальных линий (log2FC)",
+                                      value='#808080',
+                                      key='volcano_vline_color_neuro'
+                                  )
+                                  
+                                  # Настройки цветов препаратов
+                                  volcano_colors = {}
+                                  if volcano_drugs:
+                                      st.write("Настройте цвета для препаратов:")
+                                      cols = st.columns(4)
+                                      for idx, drug in enumerate(volcano_drugs):
+                                          with cols[idx % 4]:
+                                              volcano_colors[drug] = st.color_picker(
+                                                  f"Цвет для {drug}",
+                                                  value=px.colors.qualitative.Plotly[idx % len(px.colors.qualitative.Plotly)],
+                                                  key=f"volcano_color_{drug}_neuro"
+                                              )
+                          
+                          submitted_volcano = st.form_submit_button("Построить Volcano Plot") #здесь не нужен ключ
+
+                          if submitted_volcano:
+                             st.session_state['show_vulcano_plot_neuro'] = True
+
+                      if st.session_state['show_vulcano_plot_neuro'] and volcano_drugs:
+                          significant_df = plot_volcano(
+                              fc_df, 
+                              volcano_drugs, 
+                              p_value_threshold=p_value_threshold,
+                              log2fc_threshold=log2fc_threshold,
+                              custom_colors=volcano_colors,
+                              show_legend=show_legend,
+                              hline_color=hline_color,
+                              vline_color=vline_color
+                          )
+                          
+                          if significant_df is not None and not significant_df.empty:
+                              st.subheader("Значимые метрики")
+                              st.write(f"Найдено {len(significant_df)} значимых метрик (p < {p_value_threshold}, |log2FC| > {log2fc_threshold})")
+                              st.dataframe(significant_df)
+                              
+                              # Кнопка скачивания значимых метаболитов
+                              output_significant = io.BytesIO()
+                              with pd.ExcelWriter(output_significant, engine='openpyxl') as writer:
+                                  significant_df.to_excel(writer, index=False, sheet_name='Significant_Metrics')
+                              output_significant.seek(0)
+                              
+                              st.download_button(
+                                  label="Скачать таблицу значимых метрик",
+                                  data=output_significant,
+                                  file_name=f"significant_metrics_p{p_value_threshold}_fc{log2fc_threshold}.xlsx",
+                                  mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                  key = "Скачать таблицу значимых метрик_neuro"
+                              )
+                          elif significant_df is not None and significant_df.empty:
+                              st.warning("Нет значимых метрик при заданных параметрах.")
+
 
             except ValueError as e:
                st.error(f"❌ В данных есть необработанные значения ('-'). Перейдите во вкладку «⚙️ Анализ данных» и обработайте их.")
