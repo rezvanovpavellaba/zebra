@@ -549,6 +549,7 @@ def neurotoxicity_app():
         if df is None:
             st.warning("Сначала загрузите таблицы на вкладке «Загрузка и просмотр».")
         else:
+            df = df.copy()  # 🔧 вот эта строка — ключ к изоляции изменений
             # === Определение ключевых колонок ===
             col_trial = df.columns[0]       # Trial
             col_exposure = df.columns[1]    # Exposure
@@ -723,6 +724,7 @@ def neurotoxicity_app():
                    )
 
             except ValueError as e:
+               st.write(agg_df["Concentration"])
                st.error(f"❌ В столбце `{col_velocity}` есть необработанные значения ('-'). Перейдите во вкладку «⚙️ Анализ данных» и обработайте их.")
 
     # ================
@@ -737,6 +739,7 @@ def neurotoxicity_app():
         if df is None:
             st.warning("Сначала загрузите таблицы на вкладке «Загрузка и просмотр».")
         else:
+            df = df.copy()  # 🔧 вот эта строка — ключ к изоляции изменений
             col_well = df.columns[2]
             col_time = "Time"
 
