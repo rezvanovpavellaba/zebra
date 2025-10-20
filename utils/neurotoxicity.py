@@ -141,6 +141,7 @@ def compute_deletion_report(file_keys: list[str]) -> dict:
 
 
 def render_sidebar_report(report: dict):
+
     """Рисует динамический отчёт в сайдбаре."""
     st.sidebar.header("🧾 Отчёт по удалению")
 
@@ -177,6 +178,8 @@ def neurotoxicity_app():
 
     for key in file_keys:
         init_state_for_key(key)
+
+    selected_key = st.sidebar.selectbox("Выберите временной интервал:", file_keys)
 
     # =============================
     # 📁 Вкладка загрузки и просмотра
@@ -243,8 +246,7 @@ def neurotoxicity_app():
         if not all_dfs_loaded:
             st.warning("Сначала загрузите и обработайте таблицы на вкладке «Загрузка и просмотр».")
         else:
-            selected_key = st.selectbox("Выберите временной интервал:", file_keys)
-
+            
             df = st.session_state.get(f"{selected_key}_data")
             raw_df = st.session_state.get(f"{selected_key}_raw")
             if df is None or raw_df is None:
@@ -258,7 +260,7 @@ def neurotoxicity_app():
                 st.stop()
             dist_col = dist_cols[0]
 
-            dist_numeric = pd.to_numeric(df[dist_col], errors="coerce")
+            dist_numeric = pd.to_numeric(df[dist_col])#, errors="coerce")
 
             wells_all = [f"{r}{c}" for r in "ABCDEFGH" for c in range(1, 13)]
             wells_present = raw_df[well_col].astype(str).dropna().unique().tolist()
@@ -324,38 +326,135 @@ def neurotoxicity_app():
 
                 # === ЖЁЛТЫЕ ===
                 with col_yellow:
-                    st.markdown("#### 🟡 Удаление лунок > 1000")
+                    st.markdown("#### 🟡 Обработка лунок с Distance > 1000")
                     if wells_high:
-                        well_to_remove = st.selectbox("Одиночный выбор:", sorted(wells_high, key=well_sort_key), key=f"select_remove_{selected_key}")
-                        if st.button("Удалить выбранную", key=f"remove_btn_{selected_key}"):
-                            df_new = df[df[well_col].astype(str) != well_to_remove].reset_index(drop=True)
-                            st.session_state[f"{selected_key}_data"] = df_new
+
+                        data_cols_dist = df.columns[distance_start_idx:]
+
+                        well_high = st.selectbox(
+                            "Одиночный выбор:",
+                            sorted(wells_high, key=well_sort_key),
+                            key=f"high_select_{selected_key}"
+                        )
+
+                        action = st.radio(
+                            "Действие:",
+                            ["Удалить лунку", "Заменить >1000 на NaN", "Заменить >1000 на 0"],
+                            key=f"high_action_{selected_key}"
+                        )
+
+                        if st.button("Применить", key=f"high_apply_{selected_key}"):
+                            mask = df[well_col].astype(str) == well_high
+                            
+
+                            if action == "Удалить лунку":
+                                df = df[~mask].reset_index(drop=True)
+                            else:
+                                # Определяем строки, где Distance > 1000
+                                distance_numeric = pd.to_numeric(df.loc[mask, dist_col])#, errors="coerce")
+                                target_rows = mask & (distance_numeric > 1000)
+
+                                # Применяем замену ко всем колонкам после Distance
+                                if action == "Заменить >1000 на NaN":
+                                    df.loc[target_rows, data_cols_dist] = np.nan
+                                else:
+                                    df.loc[target_rows, data_cols_dist] = 0
+
+                            st.session_state[f"{selected_key}_data"] = df
                             st.session_state[f"ver_{selected_key}"] += 1
-                            st.success(f"Удалена лунка {well_to_remove}")
                             st.rerun()
 
-                        rows_to_remove = df[df[well_col].astype(str) == well_to_remove]
-                        st.dataframe(rows_to_remove.style.applymap(
-                            lambda val: "background-color: #f0ff47" if isinstance(val, (int, float)) and val > 1000 else "",
-                            subset=[dist_col]
-                        ), use_container_width=True)
+                        # === Редактирование вручную
+                        st.markdown("##### 📝 Редактируемая таблица")
+                        highlight_df = df[df[well_col].astype(str) == well_high].copy()
+                        editable_df = highlight_df.copy()
+                        editable_df[data_cols] = editable_df[data_cols].astype(str)
+                        editable_df.reset_index(drop=True, inplace=True)
 
-                        multi_remove = st.multiselect("Множественный выбор:", sorted(wells_high, key=well_sort_key), key=f"multi_remove_{selected_key}")
-                        if multi_remove and st.button("✅ Удалить выбранные", key=f"multi_remove_btn_{selected_key}"):
-                            df_new = df[~df[well_col].astype(str).isin(multi_remove)].reset_index(drop=True)
-                            st.session_state[f"{selected_key}_data"] = df_new
-                            st.session_state[f"ver_{selected_key}"] += 1
-                            st.success(f"Удалено {len(multi_remove)} лунок")
-                            st.rerun()
+                        editable_df["⚠️"] = editable_df[dist_col].apply(
+                            lambda x: "⚠️" if pd.to_numeric(x) > 1000 else "" #, errors="coerce")
+                        )
 
-                        if st.button("❌ Удалить все жёлтые лунки", key=f"remove_all_high_{selected_key}"):
-                            df_new = df[~df[well_col].astype(str).isin(wells_high)].reset_index(drop=True)
-                            st.session_state[f"{selected_key}_data"] = df_new
+                        edited_df = st.data_editor(
+                            editable_df,
+                            use_container_width=True,
+                            key=f"editor_high_{selected_key}_{well_high}"
+                        )
+
+                        if st.button("💾 Сохранить изменения", key=f"save_edits_high_{selected_key}_{well_high}"):
+                            mask = df[well_col].astype(str) == well_high
+                            well_indices = df[mask].index
+                            edited_clean = edited_df.drop(columns=["⚠️"])
+                            if len(well_indices) == len(edited_clean):
+                                df_updated = df.copy()
+                                for orig_idx, (_, row) in zip(well_indices, edited_clean.iterrows()):
+                                    df_updated.loc[orig_idx] = row
+                                st.session_state[f"{selected_key}_data"] = df_updated
+                                st.session_state[f"ver_{selected_key}"] += 1
+                                st.success(f"Изменения для лунки {well_high} сохранены.")
+                                st.rerun()
+                            else:
+                                st.error("❌ Количество строк изменилось. Возможно, вы удалили строку — сохранение невозможно.")
+
+                        # === Множественный выбор
+                        multi_high = st.multiselect(
+                            "Множественный выбор:",
+                            sorted(wells_high, key=well_sort_key),
+                            key=f"high_multi_select_{selected_key}"
+                        )
+                        if multi_high:
+                            multi_action = st.radio(
+                                "Действие для выбранных:",
+                                ["Удалить", "Заменить >1000 на NaN", "Заменить >1000 на 0"],
+                                key=f"high_multi_action_{selected_key}"
+                            )
+                            if st.button("⚙️ Применить к выбранным", key=f"high_multi_apply_{selected_key}"):
+                                mask = df[well_col].astype(str).isin(multi_high)
+                                if multi_action == "Удалить":
+                                    df = df[~mask].reset_index(drop=True)
+                                else:
+                                    # Определяем строки, где Distance > 1000
+                                    distance_numeric = pd.to_numeric(df.loc[mask, dist_col])#, errors="coerce")
+                                    target_rows = mask & (distance_numeric > 1000)
+
+                                    # Применяем замену ко всем колонкам после Distance
+                                    if action == "Заменить >1000 на NaN":
+                                        df.loc[target_rows, data_cols_dist] = np.nan
+                                    else:
+                                        df.loc[target_rows, data_cols_dist] = 0
+
+                                st.session_state[f"{selected_key}_data"] = df
+                                st.session_state[f"ver_{selected_key}"] += 1
+                                st.rerun()
+
+                        # === Массовая обработка
+                        action_all = st.radio(
+                            "Действие для всех:",
+                            ["Удалить все", "Заменить все >1000 на NaN", "Заменить все >1000 на 0"],
+                            key=f"high_all_action_{selected_key}"
+                        )
+                        if st.button("⚙️ Применить ко всем", key=f"high_all_apply_{selected_key}"):
+                            mask = df[well_col].astype(str).isin(wells_high)
+                            if action_all == "Удалить все":
+                                df = df[~mask].reset_index(drop=True)
+                            else:
+                                # Определяем строки, где Distance > 1000
+                                distance_numeric = pd.to_numeric(df.loc[mask, dist_col])#, errors="coerce")
+                                target_rows = mask & (distance_numeric > 1000)
+
+                                # Применяем замену ко всем колонкам после Distance
+                                if action == "Заменить >1000 на NaN":
+                                    df.loc[target_rows, data_cols_dist] = np.nan
+                                else:
+                                    df.loc[target_rows, data_cols_dist] = 0
+
+                            st.session_state[f"{selected_key}_data"] = df
                             st.session_state[f"ver_{selected_key}"] += 1
-                            st.success(f"Удалены все жёлтые лунки: {len(wells_high)}")
+                            st.success("Обработка завершена")
                             st.rerun()
                     else:
-                        st.info("Нет жёлтых лунок")
+                        st.info("Нет лунок с Distance > 1000")
+
 
                 # === ОРАНЖЕВЫЕ ===
                 with col_orange:
@@ -501,8 +600,28 @@ def neurotoxicity_app():
                         if st.button("Восстановить", key=f"restore_btn_{selected_key}"):
                             df_clean = df[df[well_col].astype(str) != well_to_restore].copy()
                             df_restore = raw_df[raw_df[well_col].astype(str) == well_to_restore].copy()
-                            df_new = pd.concat([df_clean, df_restore], ignore_index=True)
-                            st.session_state[f"{selected_key}_data"] = df_new.reset_index(drop=True)
+                            
+                            #при восстановлении сохраняем прежний порядок строк
+                            # Соединяем с сохранением всех строк
+                            df_new = pd.concat([df_clean, df_restore], ignore_index=False)
+
+                            # Получаем порядок индексов исходного файла
+                            raw_index_order = list(raw_df.index)
+
+                            # Убираем дубликаты индексов в порядке, где они впервые встретились
+                            raw_index_order = pd.Index(raw_index_order).drop_duplicates().tolist()
+
+                            # Чтобы восстановленные строки попали на свои места:
+                            # 1. Берём все строки из raw_df в исходном порядке
+                            # 2. Отфильтровываем только те, которые есть в df_new по well_id
+                            well_col = get_well_col(raw_df)
+                            valid_wells = set(df_new[well_col].astype(str))
+
+                            # Формируем новый DataFrame, следуя точному порядку строк из raw_df
+                            df_new_ordered = raw_df[raw_df[well_col].astype(str).isin(valid_wells)].copy().reset_index(drop=True)
+                            #######################################################################################################
+
+                            st.session_state[f"{selected_key}_data"] = df_new_ordered
                             st.session_state[f"ver_{selected_key}"] += 1
                             st.success(f"Лунка {well_to_restore} восстановлена")
                             st.rerun()
@@ -512,8 +631,28 @@ def neurotoxicity_app():
                         if multi_restore and st.button("♻️ Восстановить выбранные", key=f"multi_restore_btn_{selected_key}"):
                             df_clean = df[~df[well_col].astype(str).isin(multi_restore)].copy()
                             df_restore = raw_df[raw_df[well_col].astype(str).isin(multi_restore)].copy()
-                            df_new = pd.concat([df_clean, df_restore], ignore_index=True)
-                            st.session_state[f"{selected_key}_data"] = df_new.reset_index(drop=True)
+                            
+                            #при восстановлении сохраняем прежний порядок строк
+                            # Соединяем с сохранением всех строк
+                            df_new = pd.concat([df_clean, df_restore], ignore_index=False)
+
+                            # Получаем порядок индексов исходного файла
+                            raw_index_order = list(raw_df.index)
+
+                            # Убираем дубликаты индексов в порядке, где они впервые встретились
+                            raw_index_order = pd.Index(raw_index_order).drop_duplicates().tolist()
+
+                            # Чтобы восстановленные строки попали на свои места:
+                            # 1. Берём все строки из raw_df в исходном порядке
+                            # 2. Отфильтровываем только те, которые есть в df_new по well_id
+                            well_col = get_well_col(raw_df)
+                            valid_wells = set(df_new[well_col].astype(str))
+
+                            # Формируем новый DataFrame, следуя точному порядку строк из raw_df
+                            df_new_ordered = raw_df[raw_df[well_col].astype(str).isin(valid_wells)].copy().reset_index(drop=True)
+                            #######################################################################################################
+
+                            st.session_state[f"{selected_key}_data"] = df_new_ordered
                             st.session_state[f"ver_{selected_key}"] += 1
                             st.success(f"Восстановлены: {', '.join(multi_restore)}")
                             st.rerun()
@@ -522,8 +661,28 @@ def neurotoxicity_app():
                         if st.button("♻️ Восстановить все лунки", key=f"restore_all_{selected_key}"):
                             df_clean = df.copy()
                             df_restore = raw_df[raw_df[well_col].astype(str).isin(removed_wells)].copy()
-                            df_new = pd.concat([df_clean, df_restore], ignore_index=True)
-                            st.session_state[f"{selected_key}_data"] = df_new.reset_index(drop=True)
+                            
+                            #при восстановлении сохраняем прежний порядок строк
+                            # Соединяем с сохранением всех строк
+                            df_new = pd.concat([df_clean, df_restore], ignore_index=False)
+
+                            # Получаем порядок индексов исходного файла
+                            raw_index_order = list(raw_df.index)
+
+                            # Убираем дубликаты индексов в порядке, где они впервые встретились
+                            raw_index_order = pd.Index(raw_index_order).drop_duplicates().tolist()
+
+                            # Чтобы восстановленные строки попали на свои места:
+                            # 1. Берём все строки из raw_df в исходном порядке
+                            # 2. Отфильтровываем только те, которые есть в df_new по well_id
+                            well_col = get_well_col(raw_df)
+                            valid_wells = set(df_new[well_col].astype(str))
+
+                            # Формируем новый DataFrame, следуя точному порядку строк из raw_df
+                            df_new_ordered = raw_df[raw_df[well_col].astype(str).isin(valid_wells)].copy().reset_index(drop=True)
+                            #######################################################################################################
+
+                            st.session_state[f"{selected_key}_data"] = df_new_ordered
                             st.session_state[f"ver_{selected_key}"] += 1
                             st.success("Восстановлены все удалённые лунки")
                             st.rerun()
@@ -543,7 +702,7 @@ def neurotoxicity_app():
     with tab_agg:
         st.markdown("### 📊 Агрегация Velocity по временным отрезкам и группам")
 
-        key_selected = st.selectbox("Выберите файл:", file_keys, format_func=lambda x: f"{x}")
+        key_selected = selected_key
 
         df = st.session_state.get(f"{key_selected}_data")
         if df is None:
@@ -733,7 +892,7 @@ def neurotoxicity_app():
     with tab_calc:
         st.markdown("### 📐 Расчёт поведенческих метрик по каждой лунке и сегментам (10-мин)")
 
-        key_selected_calc = st.selectbox("Выберите файл для расчётов:", file_keys, key="select_calc")
+        key_selected_calc = selected_key
 
         df = st.session_state.get(f"{key_selected_calc}_data")
         if df is None:
