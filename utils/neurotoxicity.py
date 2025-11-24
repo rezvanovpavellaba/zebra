@@ -358,7 +358,12 @@ def neurotoxicity_app():
                                 if action == "Заменить >1000 на NaN":
                                     df.loc[target_rows, data_cols_dist] = np.nan
                                 else:
-                                    df.loc[target_rows, data_cols_dist] = 0
+                                    # Заполняем значения с логикой "Not Moving → 120, остальные → 0"
+                                    for col in data_cols_dist:
+                                        if "Not Moving" in col:
+                                            df.loc[target_rows, col] = 120
+                                        else:
+                                            df.loc[target_rows, col] = 0
 
                             st.session_state[f"{selected_key}_data"] = df
                             st.session_state[f"ver_{selected_key}"] += 1
@@ -421,7 +426,12 @@ def neurotoxicity_app():
                                     if action == "Заменить >1000 на NaN":
                                         df.loc[target_rows, data_cols_dist] = np.nan
                                     else:
-                                        df.loc[target_rows, data_cols_dist] = 0
+                                        # Заполняем значения с логикой "Not Moving → 120, остальные → 0"
+                                        for col in data_cols_dist:
+                                            if "Not Moving" in col:
+                                                df.loc[target_rows, col] = 120
+                                            else:
+                                                df.loc[target_rows, col] = 0
 
                                 st.session_state[f"{selected_key}_data"] = df
                                 st.session_state[f"ver_{selected_key}"] += 1
@@ -446,7 +456,12 @@ def neurotoxicity_app():
                                 if action == "Заменить >1000 на NaN":
                                     df.loc[target_rows, data_cols_dist] = np.nan
                                 else:
-                                    df.loc[target_rows, data_cols_dist] = 0
+                                    # Заполняем значения с логикой "Not Moving → 120, остальные → 0"
+                                    for col in data_cols_dist:
+                                        if "Not Moving" in col:
+                                            df.loc[target_rows, col] = 120
+                                        else:
+                                            df.loc[target_rows, col] = 0
 
                             st.session_state[f"{selected_key}_data"] = df
                             st.session_state[f"ver_{selected_key}"] += 1
