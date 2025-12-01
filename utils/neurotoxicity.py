@@ -790,6 +790,16 @@ def neurotoxicity_app():
                )
 
                # === График ===
+               #для названия препарата в заголовке
+               compound_value_for_graph = ""
+
+               if "Compound" in df.columns:
+                   for v in df["Compound"]:
+                       if isinstance(v, str) and v.strip() != "":
+                           compound_value_for_graph  = v.strip()
+                           break
+                       
+
                st.markdown("### 📈 График: Velocity vs Time")
                
                agg_df["Time"] = pd.to_numeric(agg_df["TimeNumeric"])#, errors="coerce")
@@ -806,12 +816,18 @@ def neurotoxicity_app():
 
                # === Настройки ===
                with st.expander("⚙️ Настройки графика", expanded=False):
-                   title = st.text_input("Заголовок графика", value=st.session_state.get("neurotoxicity_title", "Velocity vs Time"), key="key_neurotoxicity_title")
+                   #для названия препарата в заголовке
+                   if compound_value_for_graph != "":
+                      title_default_value = f"Velocity vs Time — {compound_value_for_graph}"
+                   else:
+                      title_default_value = f"Velocity vs Time"
+                   title = st.text_input("Заголовок графика", value=st.session_state.get("neurotoxicity_title", title_default_value), key="key_neurotoxicity_title")
                    st.session_state["neurotoxicity_title"] = title
                    xlabel = st.text_input("Подпись оси X", value=st.session_state.get("neurotoxicity_xlabel", "Time (min)"), key="key_neurotoxicity_xlabel")
                    st.session_state["neurotoxicity_xlabel"] = xlabel
                    ylabel = st.text_input("Подпись оси Y", value=st.session_state.get("neurotoxicity_ylabel", "Velocity (mm/s)"), key="key_neurotoxicity_ylabel")
                    st.session_state["neurotoxicity_ylabel"] = ylabel
+
                    legend_title = st.text_input("Заголовок легенды", value=st.session_state.get("neurotoxicity_legend_title", "Concentration"), key="key_neurotoxicity_legend_title")
                    st.session_state["neurotoxicity_legend_title"] = legend_title
 
