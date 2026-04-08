@@ -39,6 +39,30 @@ def file_md5(file_bytes: bytes) -> str:
     return hashlib.md5(file_bytes).hexdigest()
 
 
+SEGMENTS = ["1", "2", "3", "4", "5"]
+SEGMENT_SUM_PAIRS = [("2", "4"), ("3", "5")]
+
+
+def add_segment_pair_sums(
+    df: pd.DataFrame,
+    prefixes: list[str],
+    pairs: list[tuple[str, str]] | None = None,
+) -> pd.DataFrame:
+    """Добавляет колонки-суммы для пар сегментов, например X_2_4 и X_3_5."""
+    pairs = pairs or SEGMENT_SUM_PAIRS
+    result = df.copy()
+
+    for prefix in prefixes:
+        for left, right in pairs:
+            col_left = f"{prefix}_{left}"
+            col_right = f"{prefix}_{right}"
+            col_sum = f"{prefix}_{left}_{right}"
+            if col_left in result.columns and col_right in result.columns:
+                result[col_sum] = result[col_left] + result[col_right]
+
+    return result
+
+
 @st.cache_data(show_spinner=False)
 def parse_excel_to_df(file_bytes: bytes) -> pd.DataFrame:
     """Чтение Excel и сбор плоских заголовков как в исходном коде."""
@@ -1177,37 +1201,73 @@ def neurotoxicity_app():
               for a, b in [("1", "2"), ("3", "2"), ("3", "4"), ("5", "4")]:
                   merged_df = compute_ratio(merged_df, a, b)
 
+              merged_df = add_segment_pair_sums(
+                  merged_df,
+                  prefixes=[
+                      "D",
+                      "V_mean",
+                      "V_var",
+                      "M_moving_not_moving_ratio",
+                      "T_angle_mean_abs",
+                      "A_v_mean_abs",
+                      "M_m_mean_abs",
+                      "CW_rotation_mean",
+                      "CCW_rotation_mean",
+                      "Rotation_ratio_CW_CCW",
+                  ],
+              )
+
               # === ПОРЯДОК КОЛОНОК ===
               meta_cols = ["Test/control", "Compound", "Concentration"]
               base_cols = [col_well] + meta_cols + ["Distance Total"]
 
-              dist_seg_cols = [f"D_{i}" for i in ["1", "2", "3", "4", "5"]]
+              dist_seg_cols = [f"D_{i}" for i in SEGMENTS] + [f"D_{a}_{b}" for a, b in SEGMENT_SUM_PAIRS]
               vel_cols = []
-              for seg in ["1", "2", "3", "4", "5"]:
+              for seg in SEGMENTS:
                   m = f"V_mean_{seg}"
                   v = f"V_var_{seg}"
                   if m in merged_df.columns and v in merged_df.columns:
                       vel_cols += [m, v]
+              for a, b in SEGMENT_SUM_PAIRS:
+                  m = f"V_mean_{a}_{b}"
+                  v = f"V_var_{a}_{b}"
+                  if m in merged_df.columns and v in merged_df.columns:
+                      vel_cols += [m, v]
               ratio_cols = [col for col in merged_df.columns if col.startswith("V_ratio_")]
-              moving_ratio_cols = [col for col in merged_df.columns if col.startswith("M_moving_not_moving_ratio_")]
+              moving_ratio_cols = (
+                  [f"M_moving_not_moving_ratio_{s}" for s in SEGMENTS]
+                  + [f"M_moving_not_moving_ratio_{a}_{b}" for a, b in SEGMENT_SUM_PAIRS]
+              )
               angle_cols = []
-              for s in ["1", "2", "3", "4", "5"]:
+              for s in SEGMENTS:
                   angle_cols += [f"T_angle_mean_abs_{s}", f"T_angle_mean_{s}"]
-              
+              for a, b in SEGMENT_SUM_PAIRS:
+                  angle_cols += [f"T_angle_mean_abs_{a}_{b}"]
+               
               angvel_cols = []
-              for s in ["1", "2", "3", "4", "5"]:
+              for s in SEGMENTS:
                   angvel_cols += [f"A_v_mean_abs_{s}", f"A_v_sum_{s}"]
+              for a, b in SEGMENT_SUM_PAIRS:
+                  angvel_cols += [f"A_v_mean_abs_{a}_{b}"]
 
               meander_cols = []
-              for s in ["1", "2", "3", "4", "5"]:
+              for s in SEGMENTS:
                   meander_cols += [f"M_m_mean_abs_{s}", f"M_m_sum_{s}"]
+              for a, b in SEGMENT_SUM_PAIRS:
+                  meander_cols += [f"M_m_mean_abs_{a}_{b}"]
 
               rotation_cols = []
-              for s in ["1", "2", "3", "4", "5"]:
+              for s in SEGMENTS:
                   rotation_cols += [
                       f"CW_rotation_mean_{s}",
                       f"CCW_rotation_mean_{s}",
                       f"Rotation_ratio_CW_CCW_{s}",
+                  ]
+              for a, b in SEGMENT_SUM_PAIRS:
+                  rotation_cols += [
+                      f"CW_rotation_mean_{a}_{b}",
+                      f"CCW_rotation_mean_{a}_{b}",
+                      f"Rotation_ratio_CW_CCW_{a}_{b}",
                   ]
 
               # Объединение всех колонок

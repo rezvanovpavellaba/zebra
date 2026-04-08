@@ -300,9 +300,19 @@ def calculate_fold_change_with_pvalues(df, mode='ratio'):
     return result_df, warnings
 
 
-def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold=1.0, 
-                custom_colors=None, show_legend=True, 
-                hline_color='red', vline_color='gray'):
+def plot_volcano(
+    fc_df,
+    selected_drugs,
+    p_value_threshold=0.05,
+    log2fc_threshold=1.0,
+    custom_colors=None,
+    show_legend=True,
+    hline_color='red',
+    vline_color='gray',
+    legend_title='Drugs',
+    metabolite_label_map=None,
+    drug_label_map=None
+):
     """
     Улучшенный Volcano Plot с фильтрацией None/NaN значений и раздельной настройкой цветов линий
     Возвращает DataFrame с значимыми метаболитами
@@ -312,6 +322,10 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
         return None
     
     # Фильтрация данных
+    metabolite_label_map = metabolite_label_map or {}
+    drug_label_map = drug_label_map or {}
+    legend_title = legend_title.strip() if isinstance(legend_title, str) and legend_title.strip() else 'Drugs'
+
     volcano_data = []
     for drug in selected_drugs:
         drug_data = fc_df[(fc_df['Drug'] == drug) & (fc_df['Group'] == 'test')]
@@ -378,6 +392,20 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
     
     long_df = pd.DataFrame(long_data)
     significant_df = pd.DataFrame(significant_metabolites)
+    long_df['Display Drug'] = long_df['Drug'].apply(
+        lambda drug: drug_label_map.get(drug, drug)
+    )
+    long_df['Display Metabolite'] = long_df['Metabolite'].apply(
+        lambda metabolite: metabolite_label_map.get(metabolite, metabolite)
+    )
+    if not significant_df.empty and metabolite_label_map:
+        significant_df['Display Metabolite'] = significant_df['Metabolite'].apply(
+            lambda metabolite: metabolite_label_map.get(metabolite, metabolite)
+        )
+    if not significant_df.empty and drug_label_map:
+        significant_df['Display Drug'] = significant_df['Drug'].apply(
+            lambda drug: drug_label_map.get(drug, drug)
+        )
     
     # Настройка цветов
     color_discrete_map = None
@@ -399,13 +427,51 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
         y='-log10(p_value)',
         color='Drug',
         color_discrete_map=color_discrete_map,
-        hover_data=['Metabolite', 'Concentration', 'p_value', 'Significant'],
+        custom_data=['Display Drug', 'Display Metabolite', 'Concentration', 'p_value', 'Significant'],
         labels={
+            'Display Metabolite': 'Metabolite',
             'log2FC': 'log₂(Fold Change)',
             '-log10(p_value)': '-log₁₀(p-value)'
         },
         height=600
     )
+
+    fig.update_traces(
+        hovertemplate=(
+            f"{legend_title}=%{{customdata[0]}}<br>"
+            "Metabolite=%{customdata[1]}<br>"
+            "Concentration=%{customdata[2]}<br>"
+            "p_value=%{customdata[3]:.4g}<br>"
+            "Significant=%{customdata[4]}<br>"
+            "log2FC=%{x}<br>"
+            "-log10(p-value)=%{y}<extra></extra>"
+        ),
+        selector=dict(mode='markers')
+    )
+    for trace in fig.data:
+        if getattr(trace, 'mode', None) == 'markers':
+            display_name = drug_label_map.get(trace.name, trace.name)
+            trace.name = display_name
+            trace.legendgroup = display_name
+
+    labeled_points = long_df[long_df['Significant']].copy()
+    if not labeled_points.empty:
+        labeled_points['LabelPosition'] = np.where(
+            labeled_points['log2FC'] >= 0,
+            'top right',
+            'top left'
+        )
+        fig.add_scatter(
+            x=labeled_points['log2FC'],
+            y=labeled_points['-log10(p_value)'],
+            mode='text',
+            text=labeled_points['Display Metabolite'],
+            textposition=labeled_points['LabelPosition'],
+            textfont=dict(color='black', size=11),
+            showlegend=False,
+            hoverinfo='skip',
+            cliponaxis=False
+        )
     
     # Настройка осей с указанием порогов
     fig.update_xaxes(
@@ -475,7 +541,7 @@ def plot_volcano(fc_df, selected_drugs, p_value_threshold=0.05, log2fc_threshold
         legend=dict(
             font=dict(color='black'),
             title_font=dict(color='black'),
-            title_text='Drugs',
+            title_text=legend_title,
             bgcolor='rgba(255,255,255,0.7)',
             bordercolor='rgba(0,0,0,0)',
             borderwidth=0
@@ -1031,6 +1097,11 @@ def metabolomika_app():
                                         value=True,
                                         key='volcano_show_legend'
                                     )
+                                    legend_title = st.text_input(
+                                        "Заголовок легенды",
+                                        value="Drugs",
+                                        key='volcano_legend_title'
+                                    )
                                     
                                     # Раздельные настройки цветов линий
                                     hline_color = st.color_picker(
@@ -1057,6 +1128,56 @@ def metabolomika_app():
                                                     value=px.colors.qualitative.Plotly[idx % len(px.colors.qualitative.Plotly)],
                                                     key=f"volcano_color_{drug}"
                                                 )
+
+                                st.write("Подписи препаратов на графике:")
+                                st.caption("Изменённые подписи будут использоваться в легенде Volcano Plot и в таблице значимых метаболитов.")
+                                drug_labels_df = pd.DataFrame({
+                                    'Drug': volcano_drugs,
+                                    'Display Name': volcano_drugs
+                                })
+                                edited_drug_labels = st.data_editor(
+                                    drug_labels_df,
+                                    hide_index=True,
+                                    use_container_width=True,
+                                    disabled=['Drug'],
+                                    column_config={
+                                        'Drug': st.column_config.TextColumn('Препарат'),
+                                        'Display Name': st.column_config.TextColumn('Подпись на графике')
+                                    },
+                                    key='volcano_drug_labels_editor'
+                                )
+                                drug_label_map = {
+                                    row['Drug']: row['Display Name'].strip()
+                                    for _, row in edited_drug_labels.iterrows()
+                                    if isinstance(row['Display Name'], str)
+                                    and row['Display Name'].strip()
+                                    and row['Display Name'].strip() != row['Drug']
+                                }
+
+                                st.write("Подписи метаболитов на графике:")
+                                st.caption("Изменённые подписи будут использоваться для значимых точек Volcano Plot и в таблице значимых метаболитов.")
+                                metabolite_labels_df = pd.DataFrame({
+                                    'Metabolite': available_metabolites,
+                                    'Display Name': available_metabolites
+                                })
+                                edited_metabolite_labels = st.data_editor(
+                                    metabolite_labels_df,
+                                    hide_index=True,
+                                    use_container_width=True,
+                                    disabled=['Metabolite'],
+                                    column_config={
+                                        'Metabolite': st.column_config.TextColumn('Метаболит'),
+                                        'Display Name': st.column_config.TextColumn('Подпись на графике')
+                                    },
+                                    key='volcano_metabolite_labels_editor'
+                                )
+                                metabolite_label_map = {
+                                    row['Metabolite']: row['Display Name'].strip()
+                                    for _, row in edited_metabolite_labels.iterrows()
+                                    if isinstance(row['Display Name'], str)
+                                    and row['Display Name'].strip()
+                                    and row['Display Name'].strip() != row['Metabolite']
+                                }
                             
                             submitted_volcano = st.form_submit_button("Построить Volcano Plot")
 
@@ -1072,7 +1193,10 @@ def metabolomika_app():
                                 custom_colors=volcano_colors,
                                 show_legend=show_legend,
                                 hline_color=hline_color,
-                                vline_color=vline_color
+                                vline_color=vline_color,
+                                legend_title=legend_title,
+                                metabolite_label_map=metabolite_label_map,
+                                drug_label_map=drug_label_map
                             )
                             
                             if significant_df is not None and not significant_df.empty:
