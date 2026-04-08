@@ -10,8 +10,6 @@ st.title("Органотоксичность")
 
 panel = main_radio_button_study()
 
-
-
 if panel == "Метаболомика":
    metabolomika_app()
 elif panel == "Кардиотоксичность":
@@ -19,4 +17,4 @@ elif panel == "Кардиотоксичность":
 elif panel == "Нейротоксичность":
    neurotoxicity_app()
 else:
-   st.subheader("Гепатотоксичность")
+   hepatotoxicity_app()
