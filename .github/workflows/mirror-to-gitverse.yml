@@ -1,0 +1,47 @@
+name: Mirror to GitVerse
+
+on:
+  push:
+    branches:
+      - "**"
+    tags:
+      - "**"
+
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout full repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mirror branches and tags to GitVerse
+        env:
+          GITVERSE_TOKEN: ${{ secrets.GITVERSE_TOKEN }}
+          GITVERSE_OWNER: ${{ vars.GITVERSE_OWNER }}
+
+        run: |
+          if [ -z "$GITVERSE_TOKEN" ]; then
+            echo "Ошибка: secret GITVERSE_TOKEN не задан"
+            exit 1
+          fi
+
+          if [ -z "$GITVERSE_OWNER" ]; then
+            echo "Ошибка: variable GITVERSE_OWNER не задан"
+            exit 1
+          fi
+
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          GITVERSE_URL="https://oauth2:${GITVERSE_TOKEN}@gitverse.ru/${GITVERSE_OWNER}/${REPO_NAME}.git"
+
+          git remote add gitverse "$GITVERSE_URL"
+
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*' --prune
+          git fetch origin '+refs/tags/*:refs/tags/*' --prune
+
+          git push gitverse 'refs/remotes/origin/*:refs/heads/*'
+          git push gitverse 'refs/tags/*:refs/tags/*'
